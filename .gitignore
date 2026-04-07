@@ -1,0 +1,36 @@
+# STM32CubeMX / STM32 firmware sources should stay tracked.
+# Ignore editor caches, local tool settings, and build outputs.
+
+# VS Code workspace-local settings with absolute paths/toolchain state
+.vscode/
+
+# Keil uVision user-specific files
+*.uvguix.*
+*.uvoptx
+
+# Keil / ARM build output directories
+MDK-ARM/DebugConfig/
+MDK-ARM/01_Pet_Locator/
+
+# CMSIS / RTE generated temp files
+MDK-ARM/RTE/_*
+
+# Generic embedded build artifacts
+*.axf
+*.bin
+*.crf
+*.d
+*.dep
+*.elf
+*.hex
+*.htm
+*.lst
+*.map
+*.o
+*.tmp
+*.bak
+
+# Logs and OS noise
+*.log
+Thumbs.db
+Desktop.ini

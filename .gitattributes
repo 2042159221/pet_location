@@ -1,0 +1,28 @@
+* text=auto
+
+# Firmware sources
+*.c text eol=lf
+*.h text eol=lf
+*.s text eol=lf
+*.ld text eol=lf
+
+# STM32 / Keil project files are primarily edited on Windows
+*.ioc text eol=crlf
+*.uvprojx text eol=crlf
+*.uvmpw text eol=crlf
+*.sct text eol=crlf
+
+# Documentation / configs
+*.md text eol=lf
+*.txt text eol=lf
+*.json text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+
+# Common binary assets
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.bmp binary
+*.pdf binary
