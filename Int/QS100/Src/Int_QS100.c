@@ -49,6 +49,9 @@ static void Int_QS100_SendATCMD(const char *cmd)
         {
             continue;
         }
+        else
+        {
+            // 这里说明本次接收到了数据，qs100_receive_length 已经被更新了。
         //分批内容返回了
         COM_DEBUG_LN("%s", qs100_rx_buffer);
         memcpy(&qs100_response_data[qs100_final_data_length], qs100_rx_buffer, qs100_receive_length);
@@ -61,6 +64,7 @@ static void Int_QS100_SendATCMD(const char *cmd)
         {
             //接收到了完整的响应，退出等待循环
             break;
+        }
         }
     }
     //接收完成后，打印最终汇总的响应数据和总长度。
@@ -122,4 +126,24 @@ void Int_QS100_WakeUp(void)
     HAL_GPIO_WritePin(QS100_WKUP_GPIO_Port, QS100_WKUP_Pin, GPIO_PIN_SET);
     Com_Delay_ms(100U);
     HAL_GPIO_WritePin(QS100_WKUP_GPIO_Port, QS100_WKUP_Pin, GPIO_PIN_RESET);
+}
+
+QS100_NetworkStatus Int_QS100_CheckNetworkStatus(void)
+{
+    // 发送 AT 指令查询网络状态,指令是 AT+CGATT?，该指令用于查询模块的  附着状态。
+    Int_QS100_SendATCMD("AT+CGATT?\r\n");
+
+    // 解析响应数据，判断网络状态
+    if (strstr((char *)qs100_response_data, "OK") != NULL)
+    {
+        return QS100_NETWORK_CONNECTED;
+    }
+    else if (strstr((char *)qs100_response_data, "ERROR") != NULL)
+    {
+        return QS100_NETWORK_ERROR;
+    }
+    else
+    {
+        return QS100_NETWORK_TIMEOUT;
+    }
 }

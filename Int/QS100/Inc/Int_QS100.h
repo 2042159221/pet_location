@@ -7,6 +7,14 @@
 #include "string.h"
 #include "Com_Debug.h"
 
+//定义枚举类型，表示QS100的网络状态
+typedef enum
+{
+    QS100_NETWORK_CONNECTED= 0,     // 网络已连接
+    QS100_NETWORK_ERROR,      // 网络连接错误
+    QS100_NETWORK_TIMEOUT           // 网络连接超时
+} QS100_NetworkStatus;
+
 /**
  * @file Int_QS100.h
  * @brief QS100 模块接口层头文件
@@ -28,6 +36,10 @@ void Int_QS100_Init(void);
 // 对 QS100 输出一次唤醒脉冲。
 // 该函数通过控制 WKUP 引脚的高低电平变化，让模块进入可通信状态。
 void Int_QS100_WakeUp(void);
+
+//封装风法查询QS100联网成功否
+QS100_NetworkStatus Int_QS100_CheckNetworkStatus(void);
+
 
 // QS100 提供的串口接收回调处理函数。
 // 该函数在 USART3 的空闲中断回调中被调用，用于处理本次收到的一批数据。
