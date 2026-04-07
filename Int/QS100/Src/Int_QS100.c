@@ -165,3 +165,25 @@ QS100_NetworkStatus Int_QS100_CreateSocket(void)
         return QS100_NETWORK_TIMEOUT;
     }
 }
+
+
+QS100_NetworkStatus Int_QS100_ConnectServer(const char *ip, uint16_t port)
+{
+    //链接远程服务器命令：AT+NSOCO=0,139.224.112.6,10005\r\n
+    //AT+NSOCO=0,"<IP_ADDRESS>",10005\r\n
+    uint8_t cmd_buffer[64] = {0};
+   snprintf((char *)cmd_buffer, sizeof(cmd_buffer),"AT+NSOCO=0,\"%s\",%d\r\n", ip, port);
+    Int_QS100_SendATCMD(cmd_buffer);
+    if (strstr((char *)qs100_response_data, "OK") != NULL)
+    {
+        return QS100_NETWORK_CONNECTED;
+    }
+    else if (strstr((char *)qs100_response_data, "ERROR") != NULL)
+    {
+        return QS100_NETWORK_ERROR;
+    }
+    else
+    {
+        return QS100_NETWORK_TIMEOUT;
+    }
+}
