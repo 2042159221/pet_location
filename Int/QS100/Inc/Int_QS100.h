@@ -41,6 +41,9 @@ void Int_QS100_WakeUp(void);
 QS100_NetworkStatus Int_QS100_CheckNetworkStatus(void);
 
 
+//封装一个方法，创建SOCKET通信通道
+QS100_NetworkStatus Int_QS100_CreateSocket(void);
+
 // QS100 提供的串口接收回调处理函数。
 // 该函数在 USART3 的空闲中断回调中被调用，用于处理本次收到的一批数据。
 // 需要注意：一次 receive_size 只代表本次空闲中断前收到的数据长度，

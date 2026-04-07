@@ -147,3 +147,21 @@ QS100_NetworkStatus Int_QS100_CheckNetworkStatus(void)
         return QS100_NETWORK_TIMEOUT;
     }
 }
+
+QS100_NetworkStatus Int_QS100_CreateSocket(void)
+{
+    //AT+NSOCR=STREAM,6,10005,1\r\n
+    Int_QS100_SendATCMD("AT+NSOCR=STREAM,6,0,0\r\n");
+    if (strstr((char *)qs100_response_data, "OK") != NULL)
+    {
+        return QS100_NETWORK_CONNECTED;
+    }
+    else if (strstr((char *)qs100_response_data, "ERROR") != NULL)
+    {
+        return QS100_NETWORK_ERROR;
+    }
+    else
+    {
+        return QS100_NETWORK_TIMEOUT;
+    }
+}
