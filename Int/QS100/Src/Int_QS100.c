@@ -76,6 +76,10 @@ static volatile uint8_t qs100_rx_restart_failed = 0U;
 // 注意：这个值不是硬编码的，而是从 +NSOCR:<socket> 的响应里解析出来。
 static int8_t qs100_socket_id = INT_QS100_SOCKET_INVALID;
 
+// 记录当前 socket 是否已经完成过 NSOCO 连接。
+// 这样 UploadData 在周期性上报时，就不会每次都重复执行一次连接。
+static uint8_t qs100_socket_connected = 0U;
+
 // 判断当前完整响应是否以某个后缀结尾。
 // 例如我们会用它来判断是否以 "\r\nOK\r\n" 或 "ERROR\r\n" 结尾。
 // 这样做比直接在整个字符串里盲目搜索 "OK" 更稳，因为响应中间也可能出现这些字符。
@@ -105,6 +109,45 @@ static uint8_t Int_QS100_ResponseContains(const char *token)
     if (strstr(qs100_response_data, token) != NULL)
     {
         return 1U;
+    }
+
+    return 0U;
+}
+
+// 判断当前 CGPADDR 响应里是否已经拿到可用于 AF_INET 的 IPv4 地址。
+// 当前上传链路使用的是 NSOCR 默认的 AF_INET，因此这里只把“带点分十进制”的地址当成 ready。
+static uint8_t Int_QS100_IsIpv4Ready(void)
+{
+    const char *addr_ptr = strstr(qs100_response_data, "+CGPADDR:");
+
+    if (addr_ptr == NULL)
+    {
+        return 0U;
+    }
+
+    addr_ptr = strchr(addr_ptr, ',');
+    if (addr_ptr == NULL)
+    {
+        return 0U;
+    }
+
+    addr_ptr++;
+    while (*addr_ptr == ' ' || *addr_ptr == '"')
+    {
+        addr_ptr++;
+    }
+
+    while (*addr_ptr != '\0' &&
+           *addr_ptr != '\r' &&
+           *addr_ptr != '\n' &&
+           *addr_ptr != ',' &&
+           *addr_ptr != '"')
+    {
+        if (*addr_ptr == '.')
+        {
+            return 1U;
+        }
+        addr_ptr++;
     }
 
     return 0U;
@@ -409,6 +452,7 @@ static QS100_NetworkStatus Int_QS100_WaitForNetworkReady(uint32_t timeout_ms)
     {
         uint8_t attach_ready = 0U;
         uint8_t cereg_ready = 0U;
+        uint8_t ip_ready = 0U;
         QS100_NetworkStatus status = Int_QS100_SendATCMD("AT+CGATT?\r\n");
 
         if (status == QS100_NETWORK_CONNECTED)
@@ -430,11 +474,23 @@ static QS100_NetworkStatus Int_QS100_WaitForNetworkReady(uint32_t timeout_ms)
             return status;
         }
 
-        COM_DEBUG_LN("QS100 network pending: CGATT=%u, CEREG=%u",
-                     attach_ready,
-                     cereg_ready);
+        status = Int_QS100_SendATCMD("AT+CGPADDR\r\n");
+        if (status == QS100_NETWORK_CONNECTED)
+        {
+            ip_ready = Int_QS100_IsIpv4Ready();
+        }
+        else if (status == QS100_NETWORK_RX_RESTART_FAILED ||
+                 status == QS100_NETWORK_RESPONSE_OVERFLOW)
+        {
+            return status;
+        }
 
-        if (attach_ready == 1U && cereg_ready == 1U)
+        COM_DEBUG_LN("QS100 network pending: CGATT=%u, CEREG=%u, CGPADDR=%u",
+                     attach_ready,
+                     cereg_ready,
+                     ip_ready);
+
+        if (attach_ready == 1U && cereg_ready == 1U && ip_ready == 1U)
         {
             return QS100_NETWORK_CONNECTED;
         }
@@ -443,6 +499,32 @@ static QS100_NetworkStatus Int_QS100_WaitForNetworkReady(uint32_t timeout_ms)
     }
 
     return QS100_NETWORK_TIMEOUT;
+}
+
+// 在 NSOCR 失败时补查几个关键前置条件，缩小“为什么不能建 socket”的范围。
+// 这类日志属于临时定位信息，根因确认后建议移除，避免串口噪声过大。
+static void Int_QS100_LogSocketCreateDiagnostics(void)
+{
+    QS100_NetworkStatus diag_status = Int_QS100_SendATCMD("AT+QREGSWT?\r\n");
+    COM_DEBUG_LN("QS100 socket diag QREGSWT status=%s (%d)",
+                 Int_QS100_StatusToString(diag_status),
+                 diag_status);
+
+    diag_status = Int_QS100_SendATCMD("AT+CGPADDR\r\n");
+    COM_DEBUG_LN("QS100 socket diag CGPADDR status=%s (%d), ipv4_ready=%u",
+                 Int_QS100_StatusToString(diag_status),
+                 diag_status,
+                 (diag_status == QS100_NETWORK_CONNECTED) ? Int_QS100_IsIpv4Ready() : 0U);
+
+    diag_status = Int_QS100_SendATCMD("AT+CGDCONT?\r\n");
+    COM_DEBUG_LN("QS100 socket diag CGDCONT status=%s (%d)",
+                 Int_QS100_StatusToString(diag_status),
+                 diag_status);
+
+    diag_status = Int_QS100_SendATCMD("AT+CGCONTRDP\r\n");
+    COM_DEBUG_LN("QS100 socket diag CGCONTRDP status=%s (%d)",
+                 Int_QS100_StatusToString(diag_status),
+                 diag_status);
 }
 
 // 将内部状态码转换成可读字符串。
@@ -597,6 +679,11 @@ QS100_NetworkStatus Int_QS100_CreateSocket(void)
     status = Int_QS100_SendATCMD("AT+NSOCR=STREAM,6,0,1\r\n");
     if (status != QS100_NETWORK_CONNECTED)
     {
+        if (status == QS100_NETWORK_CME_ERROR || status == QS100_NETWORK_ERROR)
+        {
+            COM_DEBUG_LN("QS100 socket create failed, start prerequisite diagnostics.");
+            Int_QS100_LogSocketCreateDiagnostics();
+        }
         return status;
     }
 
@@ -607,6 +694,7 @@ QS100_NetworkStatus Int_QS100_CreateSocket(void)
     }
 
     qs100_socket_id = socket_id;
+    qs100_socket_connected = 0U;
     COM_DEBUG_LN("QS100 socket created, socket_id=%d", qs100_socket_id);
     return QS100_NETWORK_CONNECTED;
 }
@@ -616,6 +704,7 @@ QS100_NetworkStatus Int_QS100_CreateSocket(void)
 QS100_NetworkStatus Int_QS100_ConnectServer(const char *ip, uint16_t port)
 {
     char cmd_buffer[64] = {0};
+    QS100_NetworkStatus status = QS100_NETWORK_TIMEOUT;
 
     if (qs100_socket_id == INT_QS100_SOCKET_INVALID)
     {
@@ -630,7 +719,17 @@ QS100_NetworkStatus Int_QS100_ConnectServer(const char *ip, uint16_t port)
              ip,
              port);
 
-    return Int_QS100_SendATCMD(cmd_buffer);
+    status = Int_QS100_SendATCMD(cmd_buffer);
+    if (status == QS100_NETWORK_CONNECTED)
+    {
+        qs100_socket_connected = 1U;
+    }
+    else
+    {
+        qs100_socket_connected = 0U;
+    }
+
+    return status;
 }
 
 // 向远程服务器发送数据。
@@ -641,6 +740,7 @@ QS100_NetworkStatus Int_QS100_SendData2Sever(const uint8_t *data, uint16_t lengt
     char hex_payload[1024] = {0};
     char cmd_buffer[1100] = {0};
     uint16_t i = 0U;
+    QS100_NetworkStatus status = QS100_NETWORK_TIMEOUT;
 
     if (qs100_socket_id == INT_QS100_SOCKET_INVALID)
     {
@@ -668,5 +768,119 @@ QS100_NetworkStatus Int_QS100_SendData2Sever(const uint8_t *data, uint16_t lengt
              length,
              hex_payload);
 
-    return Int_QS100_SendATCMD(cmd_buffer);
+    status = Int_QS100_SendATCMD(cmd_buffer);
+    if (status != QS100_NETWORK_CONNECTED)
+    {
+        qs100_socket_connected = 0U;
+    }
+
+    return status;
+}
+
+QS100_NetworkStatus Int_QS100_UploadData(const char *server,
+                                         uint16_t port,
+                                         uint16_t length,
+                                         const uint8_t *data)
+{
+    QS100_NetworkStatus status = QS100_NETWORK_TIMEOUT;
+    uint8_t retry_count = 0U;
+
+    if (server == NULL || data == NULL || length == 0U)
+    {
+        COM_DEBUG_LN("QS100 upload skipped, invalid args. server_valid=%u, data_valid=%u, length=%u",
+                     (server != NULL) ? 1U : 0U,
+                     (data != NULL) ? 1U : 0U,
+                     length);
+        return QS100_NETWORK_UNEXPECTED_RESPONSE;
+    }
+
+    // 1. 先确认网络真的已经附着并注册完成。
+    status = Int_QS100_WaitForNetworkReady(INT_QS100_NETWORK_READY_TIMEOUT_MS);
+    if (status != QS100_NETWORK_CONNECTED)
+    {
+        COM_DEBUG_LN("QS100 upload data failed, network status=%s (%d)",
+                     Int_QS100_StatusToString(status),
+                     status);
+        return status;
+    }
+    COM_DEBUG_LN("QS100 network is ready, start uploading data.");
+
+    // 2. 如果还没有 socket，就创建一次；如果已有，就直接复用。
+    if (qs100_socket_id == INT_QS100_SOCKET_INVALID)
+    {
+        for (retry_count = 0U; retry_count < 5U; retry_count++)
+        {
+            status = Int_QS100_CreateSocket();
+            if (status == QS100_NETWORK_CONNECTED)
+            {
+                break;
+            }
+
+            COM_DEBUG_LN("QS100 create socket failed, retry=%u, status=%s (%d)",
+                         (uint16_t)(retry_count + 1U),
+                         Int_QS100_StatusToString(status),
+                         status);
+            Com_Delay_s(1U);
+        }
+
+        if (status != QS100_NETWORK_CONNECTED)
+        {
+            COM_DEBUG_LN("QS100 upload data failed, create socket status=%s (%d)",
+                         Int_QS100_StatusToString(status),
+                         status);
+            return status;
+        }
+
+        COM_DEBUG_LN("QS100 socket is ready, start connecting server.");
+    }
+    else
+    {
+        COM_DEBUG_LN("QS100 reuse existing socket, socket_id=%d", qs100_socket_id);
+    }
+
+    // 3. 如果该 socket 还没有建立 TCP 连接，则先连接服务器。
+    if (qs100_socket_connected == 0U)
+    {
+        for (retry_count = 0U; retry_count < 3U; retry_count++)
+        {
+            status = Int_QS100_ConnectServer(server, port);
+            if (status == QS100_NETWORK_CONNECTED)
+            {
+                break;
+            }
+
+            COM_DEBUG_LN("QS100 connect server failed, retry=%u, status=%s (%d)",
+                         (uint16_t)(retry_count + 1U),
+                         Int_QS100_StatusToString(status),
+                         status);
+            Com_Delay_s(1U);
+        }
+
+        if (status != QS100_NETWORK_CONNECTED)
+        {
+            COM_DEBUG_LN("QS100 upload data failed, connect server status=%s (%d)",
+                         Int_QS100_StatusToString(status),
+                         status);
+            return status;
+        }
+
+        COM_DEBUG_LN("QS100 server connected, start sending data.");
+    }
+    else
+    {
+        COM_DEBUG_LN("QS100 reuse existing server connection, socket_id=%d", qs100_socket_id);
+    }
+
+    // 4. 最后再真正发送负载。
+    status = Int_QS100_SendData2Sever(data, length);
+    if (status != QS100_NETWORK_CONNECTED)
+    {
+        COM_DEBUG_LN("QS100 upload data failed during send, status=%s (%d)",
+                     Int_QS100_StatusToString(status),
+                     status);
+        return status;
+    }
+
+    COM_DEBUG_LN("QS100 upload data success, length=%u", length);
+    return QS100_NETWORK_CONNECTED;
 }

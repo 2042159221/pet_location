@@ -43,4 +43,12 @@ const char *Int_QS100_StatusToString(QS100_NetworkStatus status);
 // USART3 空闲中断回调里调用的接收处理函数。
 void Int_QS100_ReceiveCallBack(uint16_t receive_size);
 
+// 将数据上传到远程服务器。
+// 这个函数负责串起“网络就绪 -> socket 就绪 -> 连接服务器 -> 发送数据”整条链路。
+QS100_NetworkStatus Int_QS100_UploadData(const char *server,
+                                         uint16_t port,
+                                         uint16_t length,
+                                         const uint8_t *data);
+
+
 #endif /* INT_QS100_H */
