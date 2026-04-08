@@ -222,32 +222,90 @@ static uint8_t Int_QS100_IsQregswtDisabled(void)
 }
 
 // 从 AT+SEQUENCE 的响应里解析出发送状态。
-// 典型响应格式类似：
-// 0,5,1
-// OK
-// 其中最后一个数字就是该 sequence 当前的发送状态。
+// 结合当前手册和现场日志，QS100 这里至少存在两种可能格式：
+// 1. 三元组格式：socket,sequence,status
+//    例如：
+//    0,5,1
+//    OK
+// 2. 单值格式：直接返回 status
+//    例如：
+//    1
+//    OK
+// 因此这里不能只按一种固定格式写死，否则很容易把“发送已成功”误判成 UNEXPECTED_RESPONSE。
 static int8_t Int_QS100_ParseSequenceStatus(void)
 {
     const char *cursor = qs100_response_data;
 
     while (cursor != NULL && *cursor != '\0')
     {
+        const char *line_end = strchr(cursor, '\n');
+        size_t line_length = 0U;
+        char line_buffer[32] = {0};
         int socket_id = 0;
         int sequence = 0;
         int send_status = 0;
+        int single_status = 0;
 
-        if (sscanf(cursor, "%d,%d,%d", &socket_id, &sequence, &send_status) == 3)
+        if (line_end != NULL)
         {
-            if (send_status >= -1 && send_status <= 2)
+            line_length = (size_t)(line_end - cursor);
+        }
+        else
+        {
+            line_length = strlen(cursor);
+        }
+
+        // 逐行裁掉首尾空白，只对真正有效的内容行做解析。
+        // 这样像 "\r\n2\r\n\r\nOK\r\n" 这种响应，就能稳定拿到中间那一行 "2"。
+        while (line_length > 0U &&
+               (*cursor == '\r' || *cursor == '\n' || *cursor == ' ' || *cursor == '\t'))
+        {
+            cursor++;
+            line_length--;
+        }
+
+        while (line_length > 0U &&
+               (cursor[line_length - 1U] == '\r' ||
+                cursor[line_length - 1U] == '\n' ||
+                cursor[line_length - 1U] == ' ' ||
+                cursor[line_length - 1U] == '\t'))
+        {
+            line_length--;
+        }
+
+        if (line_length > 0U && line_length < sizeof(line_buffer))
+        {
+            memcpy(line_buffer, cursor, line_length);
+            line_buffer[line_length] = '\0';
+
+            if (sscanf(line_buffer, "%d,%d,%d", &socket_id, &sequence, &send_status) == 3)
             {
-                return (int8_t)send_status;
+                if (send_status >= -1 && send_status <= 2)
+                {
+                    return (int8_t)send_status;
+                }
+            }
+
+            // 再兼容单值状态格式。
+            // 例如当前现场已经出现过：
+            // 2
+            // OK
+            if (sscanf(line_buffer, "%d", &single_status) == 1)
+            {
+                if (single_status >= -1 && single_status <= 2)
+                {
+                    return (int8_t)single_status;
+                }
             }
         }
 
-        cursor = strchr(cursor, '\n');
-        if (cursor != NULL)
+        if (line_end != NULL)
         {
-            cursor++;
+            cursor = line_end + 1;
+        }
+        else
+        {
+            break;
         }
     }
 
@@ -723,6 +781,7 @@ static QS100_NetworkStatus Int_QS100_QuerySendStatus(uint8_t sequence, int8_t *s
     parsed_status = Int_QS100_ParseSequenceStatus();
     if (parsed_status < -1 || parsed_status > 2)
     {
+        COM_DEBUG_LN("QS100 sequence response parse failed, raw response: %s", qs100_response_data);
         return QS100_NETWORK_UNEXPECTED_RESPONSE;
     }
 
@@ -1172,7 +1231,8 @@ QS100_NetworkStatus Int_QS100_UploadData(const char *server,
     // 3. 如果该 socket 还没有建立 TCP 连接，则先连接服务器。
     if (qs100_socket_connected == 0U)
     {
-        for (retry_count = 0U; retry_count < 3U; retry_count++)
+        //经测试，6S最佳
+        for (retry_count = 0U; retry_count < 6U; retry_count++)
         {
             status = Int_QS100_ConnectServer(server, port);
             if (status == QS100_NETWORK_CONNECTED)
