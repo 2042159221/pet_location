@@ -621,6 +621,9 @@ static QS100_NetworkStatus Int_QS100_WaitForAtReady(uint32_t timeout_ms)
     return last_status;
 }
 
+// 前向声明：模块级恢复流程里会复用注册模式检查逻辑。
+static QS100_NetworkStatus Int_QS100_EnsureSocketRegistrationMode(void);
+
 // 直接向模块下发 NRB 重启。
 // 根据官方手册，AT+NRB 只返回 REBOOTING，不会再有最终 OK，因此这里不走常规 SendATCMD 流程。
 static void Int_QS100_SendRebootCommand(void)
@@ -636,6 +639,42 @@ static void Int_QS100_SendRebootCommand(void)
     Com_Delay_ms(1500U);
 
     Int_QS100_ResetSessionState();
+}
+
+// 在关键链路失败后，对 QS100 做一次模块级恢复。
+// 当前恢复策略专门面向“模组内部状态可能脏了”的情况，步骤如下：
+// 1. 清理 MCU 侧缓存的 socket / 连接 / IP 状态；
+// 2. 主动发一次 AT+NRB，让模组把历史 socket/网络状态清干净；
+// 3. 等待基础 AT 链路恢复；
+// 4. 重新确认 QREGSWT 配置仍符合直连 socket 的要求。
+// 这样做的目标不是把 NRB 变成常态路径，而是在真正出错时提供一次“重回干净状态”的机会。
+static QS100_NetworkStatus Int_QS100_RecoverModule(const char *reason)
+{
+    QS100_NetworkStatus status = QS100_NETWORK_TIMEOUT;
+
+    COM_DEBUG_LN("QS100 module recovery start, reason=%s", reason);
+
+    qs100_socket_id = INT_QS100_SOCKET_INVALID;
+    qs100_socket_connected = 0U;
+    memset(qs100_ipv4_addr, 0, sizeof(qs100_ipv4_addr));
+
+    Int_QS100_SendRebootCommand();
+
+    status = Int_QS100_WaitForAtReady(INT_QS100_AT_READY_TIMEOUT_MS + 8000U);
+    COM_DEBUG_LN("QS100 recovery AT ready status=%d(%s)",
+                 status,
+                 Int_QS100_StatusToString(status));
+    if (status != QS100_NETWORK_CONNECTED)
+    {
+        return status;
+    }
+
+    status = Int_QS100_EnsureSocketRegistrationMode();
+    COM_DEBUG_LN("QS100 recovery registration mode status=%d(%s)",
+                 status,
+                 Int_QS100_StatusToString(status));
+
+    return status;
 }
 
 // 确保模块处于适合直连 socket 的注册模式。
@@ -933,11 +972,11 @@ void Int_QS100_ReceiveCallBack(uint16_t receive_size)
 }
 
 // QS100 初始化函数。
-// 当前正式版初始化流程的目标不是“尽量少做事”，而是“尽量让模组从可预期的干净状态开始”。
-// 之所以最终改成现在这样，是因为前期现场已经验证出：
-// 1. MCU 反复下载/复位时，QS100 内部可能残留旧的 socket/网络状态；
-// 2. 若直接复用这些历史状态，NSOCR 可能持续报 CME ERROR；
-// 3. 强制 NRB 后再重新附网，建链路径明显更稳定。
+// 当前正式版初始化策略采用“默认轻量启动，失败后再做模组级恢复”的思路：
+// 1. 默认情况下，只做唤醒、开收、等 AT、校验 QREGSWT；
+// 2. 不再把 NRB 作为每次上电/复位的必经步骤；
+// 3. 这样可以避免每次 MCU 复位都强制清掉模组的网络/链路状态，降低启动时延和附网超时概率；
+// 4. 真正遇到建链异常时，再由上层流程触发一次模块级恢复。
 void Int_QS100_Init(void)
 {
     HAL_StatusTypeDef status = HAL_ERROR;
@@ -963,18 +1002,6 @@ void Int_QS100_Init(void)
     COM_DEBUG_LN("QS100 init AT ready status=%d(%s)",
                  at_status,
                  Int_QS100_StatusToString(at_status));
-
-    if (at_status == QS100_NETWORK_CONNECTED)
-    {
-        // 每次初始化都主动重启一次 QS100，优先清理残留 socket 和历史网络状态。
-        // 当前问题已经收敛到 NSOCR 阶段，先保证模组从干净状态开始更有价值。
-        Int_QS100_SendRebootCommand();
-
-        at_status = Int_QS100_WaitForAtReady(INT_QS100_AT_READY_TIMEOUT_MS + 8000U);
-        COM_DEBUG_LN("QS100 init AT ready after forced NRB status=%d(%s)",
-                     at_status,
-                     Int_QS100_StatusToString(at_status));
-    }
 
     if (at_status == QS100_NETWORK_CONNECTED)
     {
@@ -1174,6 +1201,7 @@ QS100_NetworkStatus Int_QS100_UploadData(const char *server,
 {
     QS100_NetworkStatus status = QS100_NETWORK_TIMEOUT;
     uint8_t retry_count = 0U;
+    uint8_t recovery_attempted = 0U;
 
     if (server == NULL || data == NULL || length == 0U)
     {
@@ -1184,94 +1212,122 @@ QS100_NetworkStatus Int_QS100_UploadData(const char *server,
         return QS100_NETWORK_UNEXPECTED_RESPONSE;
     }
 
-    // 1. 先确认网络真的已经附着并注册完成。
-    status = Int_QS100_WaitForNetworkReady(INT_QS100_NETWORK_READY_TIMEOUT_MS);
-    if (status != QS100_NETWORK_CONNECTED)
+    while (1)
     {
-        COM_DEBUG_LN("QS100 upload data failed, network status=%s (%d)",
-                     Int_QS100_StatusToString(status),
-                     status);
-        return status;
-    }
-    COM_DEBUG_LN("QS100 network is ready, start uploading data.");
-
-    // 2. 如果还没有 socket，就创建一次；如果已有，就直接复用。
-    if (qs100_socket_id == INT_QS100_SOCKET_INVALID)
-    {
-        for (retry_count = 0U; retry_count < 3U; retry_count++)
-        {
-            status = Int_QS100_CreateSocket();
-            if (status == QS100_NETWORK_CONNECTED)
-            {
-                break;
-            }
-
-            COM_DEBUG_LN("QS100 create socket failed, retry=%u, status=%s (%d)",
-                         (uint16_t)(retry_count + 1U),
-                         Int_QS100_StatusToString(status),
-                         status);
-            Com_Delay_s(1U);
-        }
-
+        // 1. 先确认网络真的已经附着并注册完成。
+        status = Int_QS100_WaitForNetworkReady(INT_QS100_NETWORK_READY_TIMEOUT_MS);
         if (status != QS100_NETWORK_CONNECTED)
         {
-            COM_DEBUG_LN("QS100 upload data failed, create socket status=%s (%d)",
+            COM_DEBUG_LN("QS100 upload data failed, network status=%s (%d)",
+                         Int_QS100_StatusToString(status),
+                         status);
+            return status;
+        }
+        COM_DEBUG_LN("QS100 network is ready, start uploading data.");
+
+        // 2. 如果还没有 socket，就创建一次；如果已有，就直接复用。
+        if (qs100_socket_id == INT_QS100_SOCKET_INVALID)
+        {
+            for (retry_count = 0U; retry_count < 3U; retry_count++)
+            {
+                status = Int_QS100_CreateSocket();
+                if (status == QS100_NETWORK_CONNECTED)
+                {
+                    break;
+                }
+
+                COM_DEBUG_LN("QS100 create socket failed, retry=%u, status=%s (%d)",
+                             (uint16_t)(retry_count + 1U),
+                             Int_QS100_StatusToString(status),
+                             status);
+                Com_Delay_s(1U);
+            }
+
+            if (status != QS100_NETWORK_CONNECTED)
+            {
+                if (recovery_attempted == 0U)
+                {
+                    recovery_attempted = 1U;
+                    status = Int_QS100_RecoverModule("create socket failed");
+                    if (status == QS100_NETWORK_CONNECTED)
+                    {
+                        COM_DEBUG_LN("QS100 module recovery success, retry upload flow.");
+                        continue;
+                    }
+                }
+
+                COM_DEBUG_LN("QS100 upload data failed, create socket status=%s (%d)",
+                             Int_QS100_StatusToString(status),
+                             status);
+                return status;
+            }
+
+            COM_DEBUG_LN("QS100 socket is ready, start connecting server.");
+        }
+        else
+        {
+            INT_QS100_VERBOSE_LN("QS100 reuse existing socket, socket_id=%d", qs100_socket_id);
+        }
+
+        // 3. 如果该 socket 还没有建立 TCP 连接，则先连接服务器。
+        if (qs100_socket_connected == 0U)
+        {
+            // 现场测试表明，QS100 在 TCP connect 阶段适当放宽重试轮数更稳。
+            for (retry_count = 0U; retry_count < 6U; retry_count++)
+            {
+                status = Int_QS100_ConnectServer(server, port);
+                if (status == QS100_NETWORK_CONNECTED)
+                {
+                    break;
+                }
+
+                COM_DEBUG_LN("QS100 connect server failed, retry=%u, status=%s (%d)",
+                             (uint16_t)(retry_count + 1U),
+                             Int_QS100_StatusToString(status),
+                             status);
+                Com_Delay_s(1U);
+            }
+
+            if (status != QS100_NETWORK_CONNECTED)
+            {
+                if (recovery_attempted == 0U)
+                {
+                    recovery_attempted = 1U;
+                    status = Int_QS100_RecoverModule("connect server failed");
+                    if (status == QS100_NETWORK_CONNECTED)
+                    {
+                        COM_DEBUG_LN("QS100 module recovery success, retry upload flow.");
+                        continue;
+                    }
+                }
+
+                COM_DEBUG_LN("QS100 upload data failed, connect server status=%s (%d)",
+                             Int_QS100_StatusToString(status),
+                             status);
+                return status;
+            }
+
+            COM_DEBUG_LN("QS100 server connected, start sending data.");
+        }
+        else
+        {
+            INT_QS100_VERBOSE_LN("QS100 reuse existing server connection, socket_id=%d", qs100_socket_id);
+        }
+
+        // 4. 最后再真正发送负载。
+        // 这里故意不自动触发模块级恢复，原因是 send 阶段可能已经把数据交给模组，
+        // 甚至服务端已经收到了数据，只是本地确认回包晚到或格式异常。
+        // 如果这里立刻 NRB 并重发，反而更容易造成业务层重复上报。
+        status = Int_QS100_SendData2Sever(data, length);
+        if (status != QS100_NETWORK_CONNECTED)
+        {
+            COM_DEBUG_LN("QS100 upload data failed during send, status=%s (%d)",
                          Int_QS100_StatusToString(status),
                          status);
             return status;
         }
 
-        COM_DEBUG_LN("QS100 socket is ready, start connecting server.");
+        COM_DEBUG_LN("QS100 upload data success, length=%u", length);
+        return QS100_NETWORK_CONNECTED;
     }
-    else
-    {
-        INT_QS100_VERBOSE_LN("QS100 reuse existing socket, socket_id=%d", qs100_socket_id);
-    }
-
-    // 3. 如果该 socket 还没有建立 TCP 连接，则先连接服务器。
-    if (qs100_socket_connected == 0U)
-    {
-        //经测试，6S最佳
-        for (retry_count = 0U; retry_count < 6U; retry_count++)
-        {
-            status = Int_QS100_ConnectServer(server, port);
-            if (status == QS100_NETWORK_CONNECTED)
-            {
-                break;
-            }
-
-            COM_DEBUG_LN("QS100 connect server failed, retry=%u, status=%s (%d)",
-                         (uint16_t)(retry_count + 1U),
-                         Int_QS100_StatusToString(status),
-                         status);
-            Com_Delay_s(1U);
-        }
-
-        if (status != QS100_NETWORK_CONNECTED)
-        {
-            COM_DEBUG_LN("QS100 upload data failed, connect server status=%s (%d)",
-                         Int_QS100_StatusToString(status),
-                         status);
-            return status;
-        }
-
-        COM_DEBUG_LN("QS100 server connected, start sending data.");
-    }
-    else
-    {
-        INT_QS100_VERBOSE_LN("QS100 reuse existing server connection, socket_id=%d", qs100_socket_id);
-    }
-
-    // 4. 最后再真正发送负载。
-    status = Int_QS100_SendData2Sever(data, length);
-    if (status != QS100_NETWORK_CONNECTED)
-    {
-        COM_DEBUG_LN("QS100 upload data failed during send, status=%s (%d)",
-                     Int_QS100_StatusToString(status),
-                     status);
-        return status;
-    }
-
-    COM_DEBUG_LN("QS100 upload data success, length=%u", length);
-    return QS100_NETWORK_CONNECTED;
 }
