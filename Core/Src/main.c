@@ -101,7 +101,8 @@ int main(void)
   MX_USART3_UART_Init();
   /* USER CODE BEGIN 2 */
   Int_QS100_Init();
-
+  QS100_NetworkStatus socket_status = Int_QS100_CreateSocket();
+  COM_DEBUG_LN("CreateSocket status=%d(%s)", socket_status, Int_QS100_StatusToString(socket_status));
   /* USER CODE END 2 */
 
   /* Infinite loop */
