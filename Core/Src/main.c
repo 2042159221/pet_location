@@ -101,7 +101,7 @@ int main(void)
   MX_USART3_UART_Init();
   /* USER CODE BEGIN 2 */
   Int_QS100_Init();
-  QS100_NetworkStatus upload_status = Int_QS100_UploadData("8.135.10.183", 36311, 5U, (const uint8_t *)"hello");
+  QS100_NetworkStatus upload_status = Int_QS100_UploadData("8.135.10.183", 38975, 5U, (const uint8_t *)"hello");
   COM_DEBUG_LN("UploadData status=%d(%s)", upload_status, Int_QS100_StatusToString(upload_status));
   /* USER CODE END 2 */
 

@@ -339,7 +339,7 @@
               <MiscControls></MiscControls>
               <Define>USE_HAL_DRIVER,STM32F103xB</Define>
               <Undefine></Undefine>
-              <IncludePath>../Core/Inc;../Drivers/STM32F1xx_HAL_Driver/Inc;../Drivers/STM32F1xx_HAL_Driver/Inc/Legacy;../Drivers/CMSIS/Device/ST/STM32F1xx/Include;../Drivers/CMSIS/Include;../Com/Inc;../Int/DS3553/Inc;../Int/AT6558R/Inc;..\Int\QS100\Inc</IncludePath>
+              <IncludePath>../Core/Inc;../Drivers/STM32F1xx_HAL_Driver/Inc;../Drivers/STM32F1xx_HAL_Driver/Inc/Legacy;../Drivers/CMSIS/Device/ST/STM32F1xx/Include;../Drivers/CMSIS/Include;../Com/Inc;../Int/DS3553/Inc;../Int/AT6558R/Inc;..\Int\QS100\Inc;..\App\Inc</IncludePath>
             </VariousControls>
           </Cads>
           <Aads>
@@ -664,6 +664,16 @@
               <FileName>Int_QS100.c</FileName>
               <FileType>1</FileType>
               <FilePath>..\Int\QS100\Src\Int_QS100.c</FilePath>
+            </File>
+          </Files>
+        </Group>
+        <Group>
+          <GroupName>App/</GroupName>
+          <Files>
+            <File>
+              <FileName>App_Main.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\App\Src\App_Main.c</FilePath>
             </File>
           </Files>
         </Group>

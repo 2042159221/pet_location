@@ -16,6 +16,11 @@
 // 这里主要覆盖普通查询命令，例如 AT、AT+CGATT?、AT+CEREG?、AT+NSOCR 等。
 #define INT_QS100_COMMAND_TIMEOUT_MS        3000U
 
+// 是否开启逐条 AT 细粒度日志。
+// 0 表示默认只保留阶段性日志和失败诊断，便于日常调试；
+// 1 表示打开每条 AT 的响应细节，适合疑难问题排查。
+#define INT_QS100_VERBOSE_LOG_ENABLE        0U
+
 // 上电后等待基础 AT 链路可用的超时时间。
 // 模块刚被唤醒时，不一定立刻能回 AT，因此这里单独留更长一点的时间。
 #define INT_QS100_AT_READY_TIMEOUT_MS       5000U
@@ -29,6 +34,22 @@
 // 等待网络就绪时，两轮查询之间的间隔。
 // 这里不连续狂刷命令，而是每隔一段时间再轮询一次。
 #define INT_QS100_NETWORK_POLL_INTERVAL_MS 1000U
+
+// 查询 socket 发送状态时，两轮轮询之间的间隔。
+// NB-IoT 空口时延通常明显高于普通蜂窝数据链路，这里不适合轮询得太猛。
+#define INT_QS100_SEND_STATUS_POLL_INTERVAL_MS 1000U
+
+// 等待一条带 sequence 的 socket 数据完成物理层发送确认的总超时时间。
+// 当前既不追求极限低延迟，也不希望“命令回 OK 就直接宣布发送成功”。
+#define INT_QS100_SEND_STATUS_TIMEOUT_MS 20000U
+
+// QS100 手册里的 TCP 示例使用固定本地端口创建 STREAM socket。
+// 这里先按手册示例使用 10005，避免继续使用 listenport=0 带来实现差异。
+#define INT_QS100_TCP_LOCAL_PORT          10005U
+
+// 保存模块当前拿到的 IPv4 地址。
+// 当前只用于在建 socket 时显式绑定本机 IP，避免模块默认绑定行为不符合预期。
+#define INT_QS100_IPV4_ADDR_SIZE           40U
 
 // 无效 socket_id 的占位值。
 // 在还没有成功执行 NSOCR 之前，socket_id 统一记成 -1，
@@ -80,6 +101,19 @@ static int8_t qs100_socket_id = INT_QS100_SOCKET_INVALID;
 // 这样 UploadData 在周期性上报时，就不会每次都重复执行一次连接。
 static uint8_t qs100_socket_connected = 0U;
 
+// 缓存最近一次从 CGPADDR 解析出来的 IPv4 地址。
+static char qs100_ipv4_addr[INT_QS100_IPV4_ADDR_SIZE] = {0};
+
+// 记录下一个准备使用的 socket sequence。
+// QS100 手册规定 sequence 的取值范围是 1~255，这里循环使用，避免长期运行后卡在固定值。
+static uint8_t qs100_next_sequence = 1U;
+
+#if INT_QS100_VERBOSE_LOG_ENABLE == 1U
+#define INT_QS100_VERBOSE_LN(...) COM_DEBUG_LN(__VA_ARGS__)
+#else
+#define INT_QS100_VERBOSE_LN(...) do { } while (0)
+#endif
+
 // 判断当前完整响应是否以某个后缀结尾。
 // 例如我们会用它来判断是否以 "\r\nOK\r\n" 或 "ERROR\r\n" 结尾。
 // 这样做比直接在整个字符串里盲目搜索 "OK" 更稳，因为响应中间也可能出现这些字符。
@@ -119,6 +153,9 @@ static uint8_t Int_QS100_ResponseContains(const char *token)
 static uint8_t Int_QS100_IsIpv4Ready(void)
 {
     const char *addr_ptr = strstr(qs100_response_data, "+CGPADDR:");
+    uint16_t ip_length = 0U;
+
+    memset(qs100_ipv4_addr, 0, sizeof(qs100_ipv4_addr));
 
     if (addr_ptr == NULL)
     {
@@ -143,14 +180,93 @@ static uint8_t Int_QS100_IsIpv4Ready(void)
            *addr_ptr != ',' &&
            *addr_ptr != '"')
     {
-        if (*addr_ptr == '.')
+        if (((*addr_ptr >= '0') && (*addr_ptr <= '9')) || (*addr_ptr == '.'))
         {
-            return 1U;
+            if (ip_length >= (uint16_t)(sizeof(qs100_ipv4_addr) - 1U))
+            {
+                memset(qs100_ipv4_addr, 0, sizeof(qs100_ipv4_addr));
+                return 0U;
+            }
+
+            qs100_ipv4_addr[ip_length++] = *addr_ptr;
         }
+        else
+        {
+            memset(qs100_ipv4_addr, 0, sizeof(qs100_ipv4_addr));
+            return 0U;
+        }
+
         addr_ptr++;
     }
 
+    if (ip_length == 0U || strchr(qs100_ipv4_addr, '.') == NULL)
+    {
+        memset(qs100_ipv4_addr, 0, sizeof(qs100_ipv4_addr));
+        return 0U;
+    }
+
+    return 1U;
+}
+
+// 判断当前 QREGSWT 是否已经处于“禁用 IoT 平台注册”的模式。
+// 直连 TCP/UDP 场景下，官方建议把它设成 2，否则可能影响后续 socket 业务。
+static uint8_t Int_QS100_IsQregswtDisabled(void)
+{
+    if (Int_QS100_ResponseContains("+QREGSWT:2") == 1U ||
+        Int_QS100_ResponseContains("+QREGSWT: 2") == 1U)
+    {
+        return 1U;
+    }
+
     return 0U;
+}
+
+// 从 AT+SEQUENCE 的响应里解析出发送状态。
+// 典型响应格式类似：
+// 0,5,1
+// OK
+// 其中最后一个数字就是该 sequence 当前的发送状态。
+static int8_t Int_QS100_ParseSequenceStatus(void)
+{
+    const char *cursor = qs100_response_data;
+
+    while (cursor != NULL && *cursor != '\0')
+    {
+        int socket_id = 0;
+        int sequence = 0;
+        int send_status = 0;
+
+        if (sscanf(cursor, "%d,%d,%d", &socket_id, &sequence, &send_status) == 3)
+        {
+            if (send_status >= -1 && send_status <= 2)
+            {
+                return (int8_t)send_status;
+            }
+        }
+
+        cursor = strchr(cursor, '\n');
+        if (cursor != NULL)
+        {
+            cursor++;
+        }
+    }
+
+    return -2;
+}
+
+// 生成下一次发送使用的 sequence。
+// 当 sequence 走到 255 后，再回到 1，避免出现 0 这个“无需确认”的保留值。
+static uint8_t Int_QS100_AllocSequence(void)
+{
+    uint8_t sequence = qs100_next_sequence;
+
+    qs100_next_sequence++;
+    if (qs100_next_sequence == 0U)
+    {
+        qs100_next_sequence = 1U;
+    }
+
+    return sequence;
 }
 
 // 判断当前 AT 响应是否已经形成“完整结束条件”。
@@ -384,19 +500,27 @@ static QS100_NetworkStatus Int_QS100_SendATCMDInternal(const char *cmd, uint32_t
     {
         COM_DEBUG_LN("QS100 receive restart failed during response.");
     }
-    else if (qs100_response_done == 0U)
+    else if (qs100_response_done == 0U && INT_QS100_VERBOSE_LOG_ENABLE == 1U)
     {
         COM_DEBUG_LN("QS100 wait response timeout, current length: %u", qs100_final_data_length);
     }
 
-    // 命令结束后，统一打印本轮汇总响应和判定结果。
-    // 这样一旦现场又出现异常，就能直接看到模块到底回了什么。
-    COM_DEBUG_LN("Final received response: %s , Total Length: %u",
-                 qs100_response_data,
-                 qs100_final_data_length);
-    COM_DEBUG_LN("QS100 response status: %s (%d)",
-                 Int_QS100_StatusToString(status),
-                 status);
+    // 常规运行时，不需要把每条 AT 的回包都刷到串口上，否则信息量会明显过大。
+    // 因此这里采用“默认静默 + 失败时自动展开 + 需要时可手动打开 verbose”的策略。
+    if (INT_QS100_VERBOSE_LOG_ENABLE == 1U ||
+        status == QS100_NETWORK_ERROR ||
+        status == QS100_NETWORK_CME_ERROR ||
+        status == QS100_NETWORK_UNEXPECTED_RESPONSE ||
+        status == QS100_NETWORK_RX_RESTART_FAILED ||
+        status == QS100_NETWORK_RESPONSE_OVERFLOW)
+    {
+        COM_DEBUG_LN("Final received response: %s , Total Length: %u",
+                     qs100_response_data,
+                     qs100_final_data_length);
+        COM_DEBUG_LN("QS100 response status: %s (%d)",
+                     Int_QS100_StatusToString(status),
+                     status);
+    }
 
     return status;
 }
@@ -437,6 +561,67 @@ static QS100_NetworkStatus Int_QS100_WaitForAtReady(uint32_t timeout_ms)
     }
 
     return last_status;
+}
+
+// 直接向模块下发 NRB 重启。
+// 根据官方手册，AT+NRB 只返回 REBOOTING，不会再有最终 OK，因此这里不走常规 SendATCMD 流程。
+static void Int_QS100_SendRebootCommand(void)
+{
+    const char *cmd = "AT+NRB\r\n";
+
+    Int_QS100_ResetSessionState();
+    HAL_UART_Transmit(&huart3, (uint8_t *)cmd, strlen(cmd), 1000U);
+
+    COM_DEBUG_LN("QS100 reboot command sent: AT+NRB");
+
+    // 给模块一点时间进入重启流程，避免立刻发下一个 AT。
+    Com_Delay_ms(1500U);
+
+    Int_QS100_ResetSessionState();
+}
+
+// 确保模块处于适合直连 socket 的注册模式。
+// 官方手册说明：若不使用 IoT platform，应设置 AT+QREGSWT=2，并通过 AT+NRB 重启后生效。
+static QS100_NetworkStatus Int_QS100_EnsureSocketRegistrationMode(void)
+{
+    QS100_NetworkStatus status = Int_QS100_SendATCMD("AT+QREGSWT?\r\n");
+
+    if (status != QS100_NETWORK_CONNECTED)
+    {
+        COM_DEBUG_LN("QS100 QREGSWT query failed, status=%s (%d)",
+                     Int_QS100_StatusToString(status),
+                     status);
+        return QS100_NETWORK_CONNECTED;
+    }
+
+    if (Int_QS100_IsQregswtDisabled() == 1U)
+    {
+        COM_DEBUG_LN("QS100 QREGSWT already disabled for direct socket mode.");
+        return QS100_NETWORK_CONNECTED;
+    }
+
+    COM_DEBUG_LN("QS100 QREGSWT is not 2, update it for direct socket mode.");
+
+    status = Int_QS100_SendATCMD("AT+QREGSWT=2\r\n");
+    if (status != QS100_NETWORK_CONNECTED)
+    {
+        COM_DEBUG_LN("QS100 QREGSWT set failed, status=%s (%d)",
+                     Int_QS100_StatusToString(status),
+                     status);
+        return QS100_NETWORK_CONNECTED;
+    }
+
+    qs100_socket_id = INT_QS100_SOCKET_INVALID;
+    qs100_socket_connected = 0U;
+
+    Int_QS100_SendRebootCommand();
+
+    status = Int_QS100_WaitForAtReady(INT_QS100_AT_READY_TIMEOUT_MS + 8000U);
+    COM_DEBUG_LN("QS100 AT ready after NRB status=%d(%s)",
+                 status,
+                 Int_QS100_StatusToString(status));
+
+    return status;
 }
 
 // 在建 socket 前轮询等待网络真正就绪。
@@ -485,10 +670,10 @@ static QS100_NetworkStatus Int_QS100_WaitForNetworkReady(uint32_t timeout_ms)
             return status;
         }
 
-        COM_DEBUG_LN("QS100 network pending: CGATT=%u, CEREG=%u, CGPADDR=%u",
-                     attach_ready,
-                     cereg_ready,
-                     ip_ready);
+        INT_QS100_VERBOSE_LN("QS100 network pending: CGATT=%u, CEREG=%u, CGPADDR=%u",
+                             attach_ready,
+                             cereg_ready,
+                             ip_ready);
 
         if (attach_ready == 1U && cereg_ready == 1U && ip_ready == 1U)
         {
@@ -501,8 +686,95 @@ static QS100_NetworkStatus Int_QS100_WaitForNetworkReady(uint32_t timeout_ms)
     return QS100_NETWORK_TIMEOUT;
 }
 
+// 查询指定 sequence 当前的发送状态。
+// QS100 手册定义：
+// 1. 1 表示发送成功；
+// 2. 0 表示发送失败；
+// 3. 2 表示发送中；
+// 4. -1 表示该 sequence 当前未被使用。
+static QS100_NetworkStatus Int_QS100_QuerySendStatus(uint8_t sequence, int8_t *send_status)
+{
+    char cmd_buffer[32] = {0};
+    QS100_NetworkStatus status = QS100_NETWORK_TIMEOUT;
+    int8_t parsed_status = -2;
+
+    if (send_status == NULL)
+    {
+        return QS100_NETWORK_UNEXPECTED_RESPONSE;
+    }
+
+    if (qs100_socket_id == INT_QS100_SOCKET_INVALID)
+    {
+        return QS100_NETWORK_UNEXPECTED_RESPONSE;
+    }
+
+    snprintf(cmd_buffer,
+             sizeof(cmd_buffer),
+             "AT+SEQUENCE=%d,%u\r\n",
+             qs100_socket_id,
+             sequence);
+
+    status = Int_QS100_SendATCMD(cmd_buffer);
+    if (status != QS100_NETWORK_CONNECTED)
+    {
+        return status;
+    }
+
+    parsed_status = Int_QS100_ParseSequenceStatus();
+    if (parsed_status < -1 || parsed_status > 2)
+    {
+        return QS100_NETWORK_UNEXPECTED_RESPONSE;
+    }
+
+    *send_status = parsed_status;
+    return QS100_NETWORK_CONNECTED;
+}
+
+// 轮询等待指定 sequence 的发送状态真正落地。
+// 只有当查询结果明确为 1 时，当前实现才把“发送成功”视为成立。
+static QS100_NetworkStatus Int_QS100_WaitForSendConfirmed(uint8_t sequence)
+{
+    uint32_t start_tick = HAL_GetTick();
+    int8_t send_status = -2;
+    QS100_NetworkStatus status = QS100_NETWORK_TIMEOUT;
+
+    while ((HAL_GetTick() - start_tick) < INT_QS100_SEND_STATUS_TIMEOUT_MS)
+    {
+        status = Int_QS100_QuerySendStatus(sequence, &send_status);
+        if (status != QS100_NETWORK_CONNECTED)
+        {
+            COM_DEBUG_LN("QS100 query send status failed, status=%s (%d)",
+                         Int_QS100_StatusToString(status),
+                         status);
+            return status;
+        }
+
+        if (INT_QS100_VERBOSE_LOG_ENABLE == 1U || send_status != 2)
+        {
+            COM_DEBUG_LN("QS100 send sequence status: socket=%d, sequence=%u, status=%d",
+                         qs100_socket_id,
+                         sequence,
+                         send_status);
+        }
+
+        if (send_status == 1)
+        {
+            return QS100_NETWORK_CONNECTED;
+        }
+
+        if (send_status == 0)
+        {
+            return QS100_NETWORK_ERROR;
+        }
+
+        Com_Delay_ms(INT_QS100_SEND_STATUS_POLL_INTERVAL_MS);
+    }
+
+    return QS100_NETWORK_TIMEOUT;
+}
+
 // 在 NSOCR 失败时补查几个关键前置条件，缩小“为什么不能建 socket”的范围。
-// 这类日志属于临时定位信息，根因确认后建议移除，避免串口噪声过大。
+// 这些日志属于保留型故障定位信息，正式版仍可保留，但如果后续串口噪声过大，可再按需裁剪。
 static void Int_QS100_LogSocketCreateDiagnostics(void)
 {
     QS100_NetworkStatus diag_status = Int_QS100_SendATCMD("AT+QREGSWT?\r\n");
@@ -515,6 +787,8 @@ static void Int_QS100_LogSocketCreateDiagnostics(void)
                  Int_QS100_StatusToString(diag_status),
                  diag_status,
                  (diag_status == QS100_NETWORK_CONNECTED) ? Int_QS100_IsIpv4Ready() : 0U);
+    COM_DEBUG_LN("QS100 socket diag cached local IPv4=%s",
+                 (qs100_ipv4_addr[0] != '\0') ? qs100_ipv4_addr : "<empty>");
 
     diag_status = Int_QS100_SendATCMD("AT+CGDCONT?\r\n");
     COM_DEBUG_LN("QS100 socket diag CGDCONT status=%s (%d)",
@@ -600,16 +874,19 @@ void Int_QS100_ReceiveCallBack(uint16_t receive_size)
 }
 
 // QS100 初始化函数。
-// 当前初始化流程与旧版本相比，最大的区别是：
-// 1. 不再主动发 AT+RB 重启模块；
-// 2. 只做唤醒、开启接收、等待 AT 基础链路可用。
-// 这样可以避免“模块刚重启完，就马上被要求建 socket”的错误时序。
+// 当前正式版初始化流程的目标不是“尽量少做事”，而是“尽量让模组从可预期的干净状态开始”。
+// 之所以最终改成现在这样，是因为前期现场已经验证出：
+// 1. MCU 反复下载/复位时，QS100 内部可能残留旧的 socket/网络状态；
+// 2. 若直接复用这些历史状态，NSOCR 可能持续报 CME ERROR；
+// 3. 强制 NRB 后再重新附网，建链路径明显更稳定。
 void Int_QS100_Init(void)
 {
     HAL_StatusTypeDef status = HAL_ERROR;
     QS100_NetworkStatus at_status = QS100_NETWORK_TIMEOUT;
 
     qs100_socket_id = INT_QS100_SOCKET_INVALID;
+    qs100_socket_connected = 0U;
+    memset(qs100_ipv4_addr, 0, sizeof(qs100_ipv4_addr));
 
     // 1. 先通过 WKUP 引脚给模块一个唤醒脉冲。
     Int_QS100_WakeUp();
@@ -627,6 +904,26 @@ void Int_QS100_Init(void)
     COM_DEBUG_LN("QS100 init AT ready status=%d(%s)",
                  at_status,
                  Int_QS100_StatusToString(at_status));
+
+    if (at_status == QS100_NETWORK_CONNECTED)
+    {
+        // 每次初始化都主动重启一次 QS100，优先清理残留 socket 和历史网络状态。
+        // 当前问题已经收敛到 NSOCR 阶段，先保证模组从干净状态开始更有价值。
+        Int_QS100_SendRebootCommand();
+
+        at_status = Int_QS100_WaitForAtReady(INT_QS100_AT_READY_TIMEOUT_MS + 8000U);
+        COM_DEBUG_LN("QS100 init AT ready after forced NRB status=%d(%s)",
+                     at_status,
+                     Int_QS100_StatusToString(at_status));
+    }
+
+    if (at_status == QS100_NETWORK_CONNECTED)
+    {
+        at_status = Int_QS100_EnsureSocketRegistrationMode();
+        COM_DEBUG_LN("QS100 init socket registration mode status=%d(%s)",
+                     at_status,
+                     Int_QS100_StatusToString(at_status));
+    }
 }
 
 // 对 QS100 输出一次唤醒脉冲。
@@ -669,14 +966,21 @@ QS100_NetworkStatus Int_QS100_CreateSocket(void)
 {
     QS100_NetworkStatus status = Int_QS100_WaitForNetworkReady(INT_QS100_NETWORK_READY_TIMEOUT_MS);
     int8_t socket_id = INT_QS100_SOCKET_INVALID;
+    char cmd_buffer[48] = {0};
 
     if (status != QS100_NETWORK_CONNECTED)
     {
         return status;
     }
 
-    // 第四个参数这里改成 1，表示允许该 socket 接收下行数据。
-    status = Int_QS100_SendATCMD("AT+NSOCR=STREAM,6,0,1\r\n");
+    // 按 QS100 手册使用固定本地端口创建 TCP socket。
+    snprintf(cmd_buffer,
+             sizeof(cmd_buffer),
+             "AT+NSOCR=STREAM,6,%u,1\r\n",
+             INT_QS100_TCP_LOCAL_PORT);
+    COM_DEBUG_LN("QS100 create TCP socket with local port=%u", INT_QS100_TCP_LOCAL_PORT);
+    status = Int_QS100_SendATCMD(cmd_buffer);
+
     if (status != QS100_NETWORK_CONNECTED)
     {
         if (status == QS100_NETWORK_CME_ERROR || status == QS100_NETWORK_ERROR)
@@ -714,7 +1018,7 @@ QS100_NetworkStatus Int_QS100_ConnectServer(const char *ip, uint16_t port)
 
     snprintf(cmd_buffer,
              sizeof(cmd_buffer),
-             "AT+NSOCO=%d,\"%s\",%u\r\n",
+             "AT+NSOCO=%d,%s,%u\r\n",
              qs100_socket_id,
              ip,
              port);
@@ -733,14 +1037,18 @@ QS100_NetworkStatus Int_QS100_ConnectServer(const char *ip, uint16_t port)
 }
 
 // 向远程服务器发送数据。
-// 当前实现会先把原始二进制数据转换成十六进制字符串，
-// 再按 NSOSD 的命令格式组织整条 AT 指令。
+// 当前正式版不再把“NSOSD 命令立即回 OK”直接当成最终成功，
+// 而是采用以下两阶段判断：
+// 1. 先发 NSOSD，确认模组接受了发送请求；
+// 2. 再通过 AT+SEQUENCE 轮询该 sequence 的真实发送状态。
+// 只有 sequence 查询最终返回 1，才把这次发送判定为成功。
 QS100_NetworkStatus Int_QS100_SendData2Sever(const uint8_t *data, uint16_t length)
 {
     char hex_payload[1024] = {0};
     char cmd_buffer[1100] = {0};
     uint16_t i = 0U;
     QS100_NetworkStatus status = QS100_NETWORK_TIMEOUT;
+    uint8_t sequence = 0U;
 
     if (qs100_socket_id == INT_QS100_SOCKET_INVALID)
     {
@@ -761,22 +1069,45 @@ QS100_NetworkStatus Int_QS100_SendData2Sever(const uint8_t *data, uint16_t lengt
         snprintf(&hex_payload[i * 2U], 3U, "%02X", data[i]);
     }
 
+    sequence = Int_QS100_AllocSequence();
+
     snprintf(cmd_buffer,
              sizeof(cmd_buffer),
-             "AT+NSOSD=%d,%u,%s,0x200,1\r\n",
+             "AT+NSOSD=%d,%u,%s,0x200,%u\r\n",
              qs100_socket_id,
              length,
-             hex_payload);
+             hex_payload,
+             sequence);
 
     status = Int_QS100_SendATCMD(cmd_buffer);
     if (status != QS100_NETWORK_CONNECTED)
     {
+        qs100_socket_connected = 0U;
+        return status;
+    }
+
+    // NSOSD 回 OK 只说明模组接受了“发送请求”，并不等价于服务器一定已经收到了数据。
+    // 这里继续通过 SEQUENCE 把“请求已提交”和“发送已确认”分开。
+    status = Int_QS100_WaitForSendConfirmed(sequence);
+    if (status != QS100_NETWORK_CONNECTED)
+    {
+        COM_DEBUG_LN("QS100 send confirm failed, sequence=%u, status=%s (%d)",
+                     sequence,
+                     Int_QS100_StatusToString(status),
+                     status);
         qs100_socket_connected = 0U;
     }
 
     return status;
 }
 
+// 将数据上传到远程服务器。
+// 当前正式版把整个流程拆成四个清晰阶段：
+// 1. 等待网络就绪；
+// 2. 创建 TCP socket；
+// 3. 连接服务器；
+// 4. 发送数据并等待发送确认。
+// 这样每个阶段失败时，都能明确知道故障到底卡在“网络、socket、connect、send”哪一层。
 QS100_NetworkStatus Int_QS100_UploadData(const char *server,
                                          uint16_t port,
                                          uint16_t length,
@@ -808,7 +1139,7 @@ QS100_NetworkStatus Int_QS100_UploadData(const char *server,
     // 2. 如果还没有 socket，就创建一次；如果已有，就直接复用。
     if (qs100_socket_id == INT_QS100_SOCKET_INVALID)
     {
-        for (retry_count = 0U; retry_count < 5U; retry_count++)
+        for (retry_count = 0U; retry_count < 3U; retry_count++)
         {
             status = Int_QS100_CreateSocket();
             if (status == QS100_NETWORK_CONNECTED)
@@ -835,7 +1166,7 @@ QS100_NetworkStatus Int_QS100_UploadData(const char *server,
     }
     else
     {
-        COM_DEBUG_LN("QS100 reuse existing socket, socket_id=%d", qs100_socket_id);
+        INT_QS100_VERBOSE_LN("QS100 reuse existing socket, socket_id=%d", qs100_socket_id);
     }
 
     // 3. 如果该 socket 还没有建立 TCP 连接，则先连接服务器。
@@ -868,7 +1199,7 @@ QS100_NetworkStatus Int_QS100_UploadData(const char *server,
     }
     else
     {
-        COM_DEBUG_LN("QS100 reuse existing server connection, socket_id=%d", qs100_socket_id);
+        INT_QS100_VERBOSE_LN("QS100 reuse existing server connection, socket_id=%d", qs100_socket_id);
     }
 
     // 4. 最后再真正发送负载。
