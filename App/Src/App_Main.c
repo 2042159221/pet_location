@@ -135,4 +135,9 @@ void App_CollectAndUploadData(void)
 
     COM_DEBUG_LN("运动步数:%d",
                  g_upload_data.step_count);
+    
+    //数据转换为json
+    UploadData2JsonString();
+
+    COM_DEBUG_LN("%s",g_upload_data.json_data);
 }

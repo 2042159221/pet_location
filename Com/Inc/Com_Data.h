@@ -10,7 +10,7 @@
  * @brief 处理数据相关的函数声明和类型定义。
  */
 
- //定义enumerate,用于存储上报数据
+ //定义结构体,用于存储上报数据
  typedef struct 
  {
     //北京时间
@@ -46,4 +46,8 @@
  * @param beijing 用于存储转换后的北京时间字符串的字符数组
  */
 void Com_Data_utc2BJ(char *utc , char beijing[]);
+
+
+//转换为结构体
+void UploadData2JsonString(void);
 #endif /* COM_DATA_H */

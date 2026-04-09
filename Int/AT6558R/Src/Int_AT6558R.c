@@ -62,12 +62,10 @@ static void Int_AT6558R_SendCommand(const char *command)
         check_sum ^= command[i];
     }
 
-    COM_DEBUG_LN("Command: %s, Checksum: %#02x", command, check_sum);
 
     // 拼接完整命令：$ + 命令体 + * + 校验和 + \r\n
     snprintf((char *)full_command, sizeof(full_command), "$%s*%02X\r\n", command, check_sum);
 
-    COM_DEBUG_LN("Full Command: %s", full_command);
 
     // 通过串口 2 把完整命令发送给 GPS 模块
     HAL_UART_Transmit(&huart2, full_command, strlen((char *)full_command), 1000);

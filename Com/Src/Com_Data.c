@@ -1,4 +1,5 @@
 #include "Com_Data.h"
+#include "cJSON.h"
 
 Upload_Data_T g_upload_data;
 
@@ -41,4 +42,43 @@ void Com_Data_utc2BJ(char *utc, char beijing[])
         beijingTm->tm_sec
     );
 
+}
+
+void UploadData2JsonString(void)
+{
+    cJSON *root = NULL;
+    cJSON_bool print_ok = 0;
+
+    g_upload_data.latitude_direction[1] = '\0';
+    g_upload_data.longitude_direction[1] = '\0';
+    g_upload_data.json_data[0] = '\0';
+
+    root = cJSON_CreateObject();
+    if (root == NULL)
+    {
+        return;
+    }
+
+    if ((cJSON_AddStringToObject(root, "time", g_upload_data.time) == NULL) ||
+        (cJSON_AddNumberToObject(root, "latitude", (double)g_upload_data.latitude) == NULL) ||
+        (cJSON_AddStringToObject(root, "latitude_direction", g_upload_data.latitude_direction) == NULL) ||
+        (cJSON_AddNumberToObject(root, "longitude", (double)g_upload_data.longitude) == NULL) ||
+        (cJSON_AddStringToObject(root, "longitude_direction", g_upload_data.longitude_direction) == NULL) ||
+        (cJSON_AddNumberToObject(root, "speed", (double)g_upload_data.speed) == NULL) ||
+        (cJSON_AddNumberToObject(root, "step_count", (double)g_upload_data.step_count) == NULL))
+    {
+        cJSON_Delete(root);
+        return;
+    }
+
+    print_ok = cJSON_PrintPreallocated(root,
+                                       g_upload_data.json_data,
+                                       (int)sizeof(g_upload_data.json_data),
+                                       0);
+    cJSON_Delete(root);
+
+    if (print_ok == 0)
+    {
+        g_upload_data.json_data[0] = '\0';
+    }
 }
