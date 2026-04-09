@@ -3,6 +3,7 @@
 #include "Com_Data.h"
 #include "Int_QS100.h"
 #include "Int_AT6558R.h"
+#include "Int_DS3553.h"
 
 //接收GPS数据缓冲区 最大容量
 #define GPS_BUFFER_SIZE 1024

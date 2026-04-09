@@ -11,7 +11,7 @@ void Int_DS3553_Init(void)
     Int_DS3553_WriteRegister(DS3553_RESET,PULSE_EN);
 
     //开发阶段，需要清零一下
-    Int_DS3553_ClearStepCount();
+    //Int_DS3553_ClearStepCount();
 
     COM_DEBUG_LN("AFTER INIT USER SET NUM: %#02x",Int_DS3553_ReadRegister(DS3553_USER_SET));
 
@@ -77,7 +77,6 @@ static void Int_DS3553_ClearStepCount(void)
     Com_Delay_ms(10);
     Int_DS3553_WriteRegister(DS3553_SET,CLEAR_EN);
 
-    
 }
 
 

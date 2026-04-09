@@ -2,6 +2,9 @@
 #ifndef COM_DATA_H
 #define COM_DATA_H
 
+#include "time.h"
+#include "stdio.h"
+
 /**
  * @file Com_Data.h
  * @brief 处理数据相关的函数声明和类型定义。
@@ -30,4 +33,17 @@
     char json_data[512];
 
  } Upload_Data_T;
+
+ // 字符串格式化时间: 2021-01-01 00:00:00
+/**
+ * @brief 将UTC时间字符串转换为北京时间字符串
+ * 
+ * 该函数接收一个UTC时间格式的字符串，将其转换为时间戳，
+ * 然后加上8小时（北京时间比UTC时间快8小时），
+ * 最后将得到的时间戳转换为北京时间格式的字符串。
+ * 
+ * @param utc 指向UTC时间字符串的指针，格式为 "YYYY-MM-DD HH:MM:SS"
+ * @param beijing 用于存储转换后的北京时间字符串的字符数组
+ */
+void Com_Data_utc2BJ(char *utc , char beijing[]);
 #endif /* COM_DATA_H */

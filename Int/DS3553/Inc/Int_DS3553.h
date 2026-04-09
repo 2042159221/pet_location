@@ -41,7 +41,6 @@ typedef enum {
  //初始化DS3553芯片
  void Int_DS3553_Init(void);
 // 封装一个函数 使得 DS3553 可以和 MCU 进行I2C通信,读取寄存器数据
-
 uint8_t Int_DS3553_ReadRegister(uint8_t mem_addr);
 
 // 封装一个函数用于获取 步数

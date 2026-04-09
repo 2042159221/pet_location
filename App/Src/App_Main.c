@@ -13,7 +13,10 @@ void App_Init(void)
     // 2. QS100初始化
     Int_QS100_Init();
 
-    // 3.lora初始化
+    // 3.DS3553初始化
+    Int_DS3553_Init();
+
+    // 4.lora 初始化
 }
 
 /**
@@ -45,30 +48,91 @@ void App_CollectAndUploadData(void)
         if (!status_For_Get)
         {
             // 真实数据获取
-            //gnrmc = strstr((char *)gps_Info, "$GNRMC");
+            // gnrmc = strstr((char *)gps_Info, "$GNRMC");
             // 假数据,开发调试阶段使用
             gnrmc = "$GNRMC,095200.993,A,3028.09020,N,11423.28576,E,0.24,0.00,270225,,,E,V*0C";
-            
-            //检测数据有效性
+
+            // 检测数据有效性
             char flag = '\0';
-            //取第一个A or V
-            sscanf(gnrmc,"%*[^AV]%c",&flag);
+            // 取第一个A or V
+            sscanf(gnrmc, "%*[^AV]%c", &flag);
 
             if (flag == 'A')
             {
-                COM_DEBUG_LN("读取到有效数据: %s",gnrmc);
+                COM_DEBUG_LN("读取到有效数据: %s", gnrmc);
                 break;
             }
-            else if(flag == 'V')
+            else if (flag == 'V')
             {
-                COM_DEBUG_LN("无效数据： %s",gnrmc);
+                COM_DEBUG_LN("无效数据： %s", gnrmc);
                 break;
             }
-            else 
+            else
             {
-                COM_DEBUG_LN("未知数据： %s",gnrmc);
+                COM_DEBUG_LN("未知数据： %s", gnrmc);
                 break;
             }
         }
     }
+    // 解析
+    uint8_t dtime[7];
+    uint8_t date[7];
+    sscanf(
+        gnrmc,
+        //$GNRMC,095200.993,A,3028.09020,N,11423.28576,E,0.24,0.00,270225,,,E,V*0C
+        "$GNRMC,%6c%*7c%f,%c,%f,%c,%f,%*f,%6c",
+        dtime,
+        &g_upload_data.latitude,
+        g_upload_data.latitude_direction,
+        &g_upload_data.longitude,
+        g_upload_data.longitude_direction,
+        &g_upload_data.speed,
+        date);
+
+    // 更改经纬度格式
+    g_upload_data.latitude = (int)(g_upload_data.latitude / 100) +
+                             (g_upload_data.latitude - (int)(g_upload_data.latitude / 100) * 100) / 60;
+    g_upload_data.longitude = (int)(g_upload_data.longitude / 100) +
+                              (g_upload_data.longitude - (int)(g_upload_data.longitude / 100) * 100) / 60;
+
+    // 时间处理
+    sprintf(g_upload_data.time, "20%c%c-%c%c-%c%c %c%c:%c%c:%c%c",
+            date[4],
+            date[5],
+            date[2],
+            date[3],
+            date[0],
+            date[1],
+            dtime[0],
+            dtime[1],
+            dtime[2],
+            dtime[3],
+            dtime[4],
+            dtime[5]);
+    COM_DEBUG_LN("%s", g_upload_data.time);
+
+    Com_Data_utc2BJ(g_upload_data.time, g_upload_data.time);
+    COM_DEBUG_LN("%s", g_upload_data.time);
+
+    // 获取步数
+    g_upload_data.step_count = Int_DS3553_GetStepCount();
+
+    COM_DEBUG_LN("GPS信息:");
+
+    COM_DEBUG_LN("经度:%f, 方向:%s",
+                 g_upload_data.longitude,
+                 g_upload_data.longitude_direction);
+
+    COM_DEBUG_LN("纬度:%f, 方向:%s",
+                 g_upload_data.latitude,
+                 g_upload_data.latitude_direction);
+
+    COM_DEBUG_LN("对地速度:%f 节",
+                 g_upload_data.speed);
+
+    COM_DEBUG_LN("定位时间:%s",
+                 g_upload_data.time);
+
+    COM_DEBUG_LN("运动步数:%d",
+                 g_upload_data.step_count);
 }

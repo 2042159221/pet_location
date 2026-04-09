@@ -104,6 +104,7 @@ int main(void)
   /* USER CODE BEGIN 2 */
   // test
   App_Init();
+  Com_Delay_s(5);
   App_CollectAndUploadData();
 
   /* USER CODE END 2 */
