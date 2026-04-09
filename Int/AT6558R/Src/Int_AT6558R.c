@@ -49,7 +49,6 @@ void Int_AT6558R_Init(void)
     Com_Delay_ms(1);
     Int_AT6558R_SendCommand("PCAS02,1000");
     Com_Delay_ms(1);
-    COM_DEBUG_LN("AT6558R initialized.");
 }
 
 static void Int_AT6558R_SendCommand(const char *command)
@@ -88,8 +87,6 @@ void Int_AT6558R_CallBack(uint16_t Size)
     // 保存一帧已经接收完成的数据，避免主循环读取时和串口接收冲突
     memcpy(gps_frame_buffer, gps_rx_buffer, Size + 1);
     gps_data_length = Size;
-
-    COM_DEBUG_LN("Received GPS data: %s , Length: %d", gps_frame_buffer, Size);
 
     // 不定长接收模式下，一次接收完成后需要重新开启下一次接收
     if (HAL_UARTEx_ReceiveToIdle_IT(&huart2, gps_rx_buffer, MAXSIZE) != HAL_OK)

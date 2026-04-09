@@ -42,7 +42,7 @@ void App_CollectAndUploadData(void)
     while (1)
     {
         status_For_Get = Int_AT6558R_GetGPSData(gps_Info, GPS_BUFFER_SIZE, &gps_Info_Len);
-        if (status_For_Get)
+        if (!status_For_Get)
         {
             // 真实数据获取
             //gnrmc = strstr((char *)gps_Info, "$GNRMC");
