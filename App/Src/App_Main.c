@@ -140,4 +140,7 @@ void App_CollectAndUploadData(void)
     UploadData2JsonString();
 
     COM_DEBUG_LN("%s",g_upload_data.json_data);
+
+    //上传数据
+    Int_QS100_UploadData("8.135.10.183", 38975, strlen(g_upload_data.json_data), (const uint8_t *)g_upload_data.json_data);
 }
