@@ -23,6 +23,7 @@
 #include "usart.h"
 #include "gpio.h"
 
+
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "Com_Delay.h"
@@ -30,6 +31,7 @@
 #include <Int_DS3553.h>
 #include <Int_AT6558R.h>
 #include <Int_QS100.h>
+#include <App_Main.h>
 
 /* USER CODE END Includes */
 
@@ -100,9 +102,10 @@ int main(void)
   MX_USART2_UART_Init();
   MX_USART3_UART_Init();
   /* USER CODE BEGIN 2 */
-  Int_QS100_Init();
-  QS100_NetworkStatus upload_status = Int_QS100_UploadData("8.135.10.183", 38975, 5U, (const uint8_t *)"hello");
-  COM_DEBUG_LN("UploadData status=%d(%s)", upload_status, Int_QS100_StatusToString(upload_status));
+  // test
+  App_Init();
+  App_CollectAndUploadData();
+
   /* USER CODE END 2 */
 
   /* Infinite loop */
