@@ -17,6 +17,8 @@
 - 当前系统主时钟依赖: `HSE`
 - 当前阶段: 功能联调、链路验证、低功耗验证
 
+以下图示均使用 `Mermaid v10` 可兼容语法，目标是贴近当前代码和硬件现状，而不是画一堆看起来完整、实际上脱离源码的装饰图。
+
 
 
 ## 当前能力清单
@@ -40,6 +42,37 @@
 | 计步器 | `DS3553` | 步数读取 |
 | NB-IoT 模块 | `QS100` | 网络接入与服务器上报 |
 | LoRa 模块 | `E220xMx` 驱动栈 | 回退通信链路 |
+
+### 系统总览图
+
+这张图回答的是“当前设备到底连了什么、数据和控制从哪里进出”。
+
+```mermaid
+flowchart LR
+    Host["调试 PC / 串口助手"]
+    Cloud["远端服务器"]
+    Peer["LoRa 对端 / 网关"]
+
+    subgraph Device["01_Pet_Locator 终端"]
+        MCU["STM32F103C8T6"]
+        GPS["AT6558R GPS"]
+        STEP["DS3553 计步器"]
+        NB["QS100 NB-IoT"]
+        LORA["E220xMx LoRa"]
+        RTC["RTC + LSE"]
+        DBG["USART1 调试口"]
+    end
+
+    GPS -->|USART2| MCU
+    STEP -->|I2C1| MCU
+    MCU -->|USART3 AT 指令| NB
+    MCU -->|SPI1| LORA
+    RTC -->|闹钟/唤醒基准| MCU
+    MCU -->|printf / COM_DEBUG| DBG
+    DBG --> Host
+    NB -->|TCP 上报| Cloud
+    LORA -->|回退链路| Peer
+```
 
 ## 接口与引脚映射
 
@@ -93,6 +126,28 @@
 - `App/`
   - 应用业务流程层。
   - 当前包含初始化、数据采集上报、低功耗进入/退出。
+
+### 分层关系图
+
+这张图回答的是“代码大致怎么分层，以及谁依赖谁”。
+
+```mermaid
+flowchart TB
+    App["App 层<br/>App_Main / App_LowPower"]
+    Inf["Inf 层<br/>Inf_LoRa"]
+    Int["Int 层<br/>AT6558R / DS3553 / QS100 / LoRa"]
+    Com["Com 层<br/>Com_Debug / Com_Delay / Com_Data / cJSON"]
+    Core["Core 层<br/>CubeMX 初始化 / 中断 / HAL 入口"]
+    Drivers["Drivers 层<br/>STM32 HAL / CMSIS"]
+
+    App --> Int
+    App --> Inf
+    App --> Com
+    Inf --> Int
+    Int --> Core
+    Com --> Core
+    Core --> Drivers
+```
 
 ### 关键模块
 
@@ -164,6 +219,68 @@
 9. 执行 `App_EnterLowPower()`，随后进入 `STANDBY`
 10. 主循环当前为空转
 
+### 启动到低功耗流程图
+
+这张图比文字列表更适合看清“启动一次之后，程序实际会怎么走，以及休眠后如何回到起点”。
+
+```mermaid
+flowchart TD
+    A["上电 / 待机唤醒"] --> B["HAL_Init()"]
+    B --> C["SystemClock_Config()"]
+    C --> D["初始化 GPIO / RTC / USART / I2C / SPI"]
+    D --> E["App_LeaveLowPower()"]
+    E --> F["App_Init()"]
+    F --> G["打印调试日志并等待 2s"]
+    G --> H["App_CollectAndUploadData()"]
+    H --> I["等待 1s"]
+    I --> J["App_EnterLowPower()"]
+    J --> K["GPS / QS100 进入低功耗"]
+    K --> L["配置 RTC 闹钟"]
+    L --> M["HAL_PWR_EnterSTANDBYMode()"]
+    M --> N["RTC / 唤醒事件触发"]
+    N --> A
+```
+
+### 低功耗状态图
+
+上一张图偏“流程顺序”，这一张图偏“状态切换”。它强调一个容易被忽略的事实：当前实现进入 `STANDBY` 后，唤醒不是从原地继续跑，而是走一次重新启动流程。
+
+```mermaid
+stateDiagram-v2
+    state "运行态" as Active
+    state "准备休眠" as PrepareSleep
+    state "RTC 已布防" as AlarmReady
+    state "待机态" as Standby
+    state "唤醒后重启" as WakeReset
+    state "恢复外设供电/唤醒" as Restore
+
+    [*] --> Active: 初始化完成
+
+    Active: GPS_EN = 1
+    Active: QS100 已唤醒
+    Active: 执行采集和上报
+
+    Active --> PrepareSleep: App_EnterLowPower()
+    PrepareSleep: GPS_EN 拉低
+    PrepareSleep: QS100 发送 AT+FASTOFF=0
+    PrepareSleep: DS3553 当前不进入低功耗
+
+    PrepareSleep --> AlarmReady: 设置 RTC 闹钟
+    AlarmReady --> Standby: HAL_PWR_EnterSTANDBYMode()
+
+    Standby: MCU 待机
+    Standby: 等待 RTC / 唤醒事件
+
+    Standby --> WakeReset: RTC 闹钟触发
+    WakeReset: 从待机恢复后重新执行启动代码
+
+    WakeReset --> Restore: App_LeaveLowPower()
+    Restore: QS100_WKUP 输出唤醒脉冲
+    Restore: GPS_EN 拉高
+
+    Restore --> Active
+```
+
 ## `App_CollectAndUploadData()` 当前行为
 
 这个函数已经是当前业务主线，不再只是占位函数。它当前会：
@@ -182,6 +299,83 @@ Int_QS100_UploadData("8.135.10.183", 38975, strlen(g_upload_data.json_data),
 ```
 
 8. 若走回退路径，则通过 `LoRa` 发送相同 JSON 数据。
+
+### 采集与上报数据流图
+
+这张图回答的是“数据是怎么从传感器一路变成最终上报载荷的”。
+
+```mermaid
+flowchart LR
+    NMEA["AT6558R NMEA 数据"] --> Parse["解析 GNRMC 关键字段"]
+    Step["DS3553 步数"] --> Merge["写入 g_upload_data"]
+    Parse --> Merge
+    Time["UTC -> 北京时间"] --> Merge
+    Merge --> Json["UploadData2JsonString() + cJSON 序列化"]
+    Json --> Payload["JSON 载荷"]
+    Payload --> NB["Int_QS100_UploadData()"]
+    NB -->|成功| Server["远端服务器"]
+    NB -->|失败或调试强制回退| LoRa["Inf_LoRa_SenData()"]
+    LoRa --> Peer["LoRa 对端 / 网关"]
+```
+
+### QS100 上报时序图
+
+前面的数据流图关注“数据怎么走”，这张图关注“`QS100` 这条链路在时序上做了什么”。它对应的是当前 `Int_QS100_UploadData()` 的真实四阶段流程，而不是抽象化后的理想模型。
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant App as App_Main
+    participant API as Int_QS100_UploadData
+    participant Modem as QS100
+    participant Cloud as Server
+
+    App->>API: UploadData(server, port, length, data)
+    Note over API,Modem: 网络 / socket / connect 阶段失败时，最多做一次模块恢复，再重试整个上传流程
+
+    loop 等待网络就绪
+        API->>Modem: AT+CGATT?
+        Modem-->>API: 附着状态
+        API->>Modem: AT+CEREG?
+        Modem-->>API: 注册状态
+        API->>Modem: AT+CGPADDR
+        Modem-->>API: IPv4 状态
+    end
+
+    alt 尚未创建 socket
+        loop 最多 3 次
+            API->>Modem: AT+NSOCR=STREAM,6,local_port,1
+            Modem-->>API: socket_id / ERROR
+        end
+    else 复用已有 socket
+        Note over API,Modem: 跳过创建阶段
+    end
+
+    alt 尚未建立 TCP 连接
+        loop 最多 6 次
+            API->>Modem: AT+NSOCO=socket_id,server,port
+            Modem-->>API: OK / ERROR
+        end
+    else 复用已有连接
+        Note over API,Modem: 跳过连接阶段
+    end
+
+    API->>Modem: AT+NSOSD=socket_id,length,hex_payload,sequence
+    Modem-->>API: OK
+    Modem-->>Cloud: 发送 TCP 负载
+
+    loop 轮询发送确认
+        API->>Modem: AT+SEQUENCE=socket_id,sequence
+        Modem-->>API: 2 发送中 / 1 成功 / 0 失败 / -1 未使用
+    end
+
+    alt sequence = 1
+        API-->>App: QS100_NETWORK_CONNECTED
+    else 发送失败或超时
+        Note over API: send 阶段不自动恢复，避免重复上报
+        API-->>App: 错误状态
+    end
+```
 
 但是必须实话实说，当前这里仍然带有明显调试痕迹：
 
