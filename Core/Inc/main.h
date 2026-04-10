@@ -57,6 +57,16 @@ void Error_Handler(void);
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/
+#define LoRa_CS_Pin GPIO_PIN_4
+#define LoRa_CS_GPIO_Port GPIOA
+#define LoRa__RST_Pin GPIO_PIN_0
+#define LoRa__RST_GPIO_Port GPIOB
+#define LoRa_BUSY_Pin GPIO_PIN_1
+#define LoRa_BUSY_GPIO_Port GPIOB
+#define LoRa_TxEN_Pin GPIO_PIN_2
+#define LoRa_TxEN_GPIO_Port GPIOB
+#define LoRa_RxEN_Pin GPIO_PIN_12
+#define LoRa_RxEN_GPIO_Port GPIOB
 #define QS100_WKUP_Pin GPIO_PIN_13
 #define QS100_WKUP_GPIO_Port GPIOB
 #define GPS_EN_Pin GPIO_PIN_3

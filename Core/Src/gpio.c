@@ -51,17 +51,35 @@ void MX_GPIO_Init(void)
   __HAL_RCC_GPIOB_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOB, QS100_WKUP_Pin|GPS_EN_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(LoRa_CS_GPIO_Port, LoRa_CS_Pin, GPIO_PIN_SET);
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(DS3553_CS_GPIO_Port, DS3553_CS_Pin, GPIO_PIN_SET);
+  HAL_GPIO_WritePin(GPIOB, LoRa__RST_Pin|LoRa_TxEN_Pin|LoRa_RxEN_Pin|QS100_WKUP_Pin, GPIO_PIN_RESET);
 
-  /*Configure GPIO pins : QS100_WKUP_Pin GPS_EN_Pin DS3553_CS_Pin */
-  GPIO_InitStruct.Pin = QS100_WKUP_Pin|GPS_EN_Pin|DS3553_CS_Pin;
+  /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(GPIOB, GPS_EN_Pin|DS3553_CS_Pin, GPIO_PIN_SET);
+
+  /*Configure GPIO pin : LoRa_CS_Pin */
+  GPIO_InitStruct.Pin = LoRa_CS_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(LoRa_CS_GPIO_Port, &GPIO_InitStruct);
+
+  /*Configure GPIO pins : LoRa__RST_Pin LoRa_TxEN_Pin LoRa_RxEN_Pin QS100_WKUP_Pin
+                           GPS_EN_Pin DS3553_CS_Pin */
+  GPIO_InitStruct.Pin = LoRa__RST_Pin|LoRa_TxEN_Pin|LoRa_RxEN_Pin|QS100_WKUP_Pin
+                          |GPS_EN_Pin|DS3553_CS_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : LoRa_BUSY_Pin */
+  GPIO_InitStruct.Pin = LoRa_BUSY_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  HAL_GPIO_Init(LoRa_BUSY_GPIO_Port, &GPIO_InitStruct);
 
 }
 

@@ -17,6 +17,7 @@ void App_Init(void)
     Int_DS3553_Init();
 
     // 4.lora 初始化
+    Inf_LoRa_Init();
 }
 
 /**
@@ -141,6 +142,13 @@ void App_CollectAndUploadData(void)
 
     COM_DEBUG_LN("%s",g_upload_data.json_data);
 
-    //上传数据
-    Int_QS100_UploadData("8.135.10.183", 38975, strlen(g_upload_data.json_data), (const uint8_t *)g_upload_data.json_data);
+    //上传数据 Iot方式
+    QS100_NetworkStatus status = Int_QS100_UploadData("8.135.10.183", 38975, strlen(g_upload_data.json_data), (const uint8_t *)g_upload_data.json_data);
+
+    //Iot 方式失败，再通过LoRa发送
+    //DEBUG 阶段 STATUS 置，两个都测试
+    status = 1 ;
+    if (status){
+        Inf_LoRa_SenData((uint8_t *)g_upload_data.json_data,strlen(g_upload_data.json_data));
+    }
 }

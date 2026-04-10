@@ -20,9 +20,9 @@
 #include "main.h"
 #include "i2c.h"
 #include "rtc.h"
+#include "spi.h"
 #include "usart.h"
 #include "gpio.h"
-
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
@@ -101,6 +101,7 @@ int main(void)
   MX_I2C1_Init();
   MX_USART2_UART_Init();
   MX_USART3_UART_Init();
+  MX_SPI1_Init();
   /* USER CODE BEGIN 2 */
   // test
   App_Init();
