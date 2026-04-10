@@ -27,5 +27,9 @@ void Int_AT6558R_CallBack(uint16_t Size);
 Status_For_Get Int_AT6558R_GetGPSData(uint8_t received_data[], uint16_t received_buffer_size, uint16_t *length);
 
 
-//
+// 进入低功耗 断电
+void Int_AT6558R_EnterLowPower(void);
+
+// 退出低功耗 上电
+void Int_AT6558R_LeaveLowPower(void);
 #endif /* INT_AT6558R_H */

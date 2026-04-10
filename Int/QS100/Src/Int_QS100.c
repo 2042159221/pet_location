@@ -5,25 +5,25 @@
 // QS100 当前版本使用的单批接收缓冲区大小。
 // 这里的“单批”指的是：USART3 一次空闲中断回调里交上来的那一段数据。
 // 这个缓冲区不是最终响应，而是 HAL 当前这一轮接收时直接写入的工作区。
-#define INT_QS100_RX_BUFFER_SIZE            128U
+#define INT_QS100_RX_BUFFER_SIZE 128U
 
 // 一次 AT 命令完整响应的汇总缓冲区大小。
 // 因为 QS100 的响应可能分多批返回，所以需要把每一批拼接起来，
 // 最后统一放到这个总缓冲区里，供后续判断 OK / ERROR / +CME ERROR。
-#define INT_QS100_FINAL_RESPONSE_SIZE       512U
+#define INT_QS100_FINAL_RESPONSE_SIZE 512U
 
 // 常规 AT 命令默认等待超时时间。
 // 这里主要覆盖普通查询命令，例如 AT、AT+CGATT?、AT+CEREG?、AT+NSOCR 等。
-#define INT_QS100_COMMAND_TIMEOUT_MS        3000U
+#define INT_QS100_COMMAND_TIMEOUT_MS 3000U
 
 // 是否开启逐条 AT 细粒度日志。
 // 0 表示默认只保留阶段性日志和失败诊断，便于日常调试；
 // 1 表示打开每条 AT 的响应细节，适合疑难问题排查。
-#define INT_QS100_VERBOSE_LOG_ENABLE        0U
+#define INT_QS100_VERBOSE_LOG_ENABLE 0U
 
 // 上电后等待基础 AT 链路可用的超时时间。
 // 模块刚被唤醒时，不一定立刻能回 AT，因此这里单独留更长一点的时间。
-#define INT_QS100_AT_READY_TIMEOUT_MS       5000U
+#define INT_QS100_AT_READY_TIMEOUT_MS 5000U
 
 // 等待网络就绪的总超时时间。
 // “网络就绪”在当前实现里指：
@@ -45,16 +45,16 @@
 
 // QS100 手册里的 TCP 示例使用固定本地端口创建 STREAM socket。
 // 这里先按手册示例使用 10005，避免继续使用 listenport=0 带来实现差异。
-#define INT_QS100_TCP_LOCAL_PORT          10005U
+#define INT_QS100_TCP_LOCAL_PORT 10005U
 
 // 保存模块当前拿到的 IPv4 地址。
 // 当前只用于在建 socket 时显式绑定本机 IP，避免模块默认绑定行为不符合预期。
-#define INT_QS100_IPV4_ADDR_SIZE           40U
+#define INT_QS100_IPV4_ADDR_SIZE 40U
 
 // 无效 socket_id 的占位值。
 // 在还没有成功执行 NSOCR 之前，socket_id 统一记成 -1，
 // 便于后续连接、发送阶段先判断“socket 是否已经创建”。
-#define INT_QS100_SOCKET_INVALID            (-1)
+#define INT_QS100_SOCKET_INVALID (-1)
 
 // USART3 当前这一批接收数据的临时缓冲区。
 // HAL_UARTEx_ReceiveToIdle_IT 每开启一次接收，后续这一批数据就先进入这里。
@@ -111,7 +111,10 @@ static uint8_t qs100_next_sequence = 1U;
 #if INT_QS100_VERBOSE_LOG_ENABLE == 1U
 #define INT_QS100_VERBOSE_LN(...) COM_DEBUG_LN(__VA_ARGS__)
 #else
-#define INT_QS100_VERBOSE_LN(...) do { } while (0)
+#define INT_QS100_VERBOSE_LN(...) \
+    do                            \
+    {                             \
+    } while (0)
 #endif
 
 // 判断当前完整响应是否以某个后缀结尾。
@@ -905,22 +908,22 @@ const char *Int_QS100_StatusToString(QS100_NetworkStatus status)
 {
     switch (status)
     {
-        case QS100_NETWORK_CONNECTED:
-            return "OK";
-        case QS100_NETWORK_ERROR:
-            return "ERROR";
-        case QS100_NETWORK_TIMEOUT:
-            return "TIMEOUT";
-        case QS100_NETWORK_RX_RESTART_FAILED:
-            return "RX_RESTART_FAILED";
-        case QS100_NETWORK_RESPONSE_OVERFLOW:
-            return "RESPONSE_OVERFLOW";
-        case QS100_NETWORK_CME_ERROR:
-            return "CME_ERROR";
-        case QS100_NETWORK_UNEXPECTED_RESPONSE:
-            return "UNEXPECTED_RESPONSE";
-        default:
-            return "UNKNOWN";
+    case QS100_NETWORK_CONNECTED:
+        return "OK";
+    case QS100_NETWORK_ERROR:
+        return "ERROR";
+    case QS100_NETWORK_TIMEOUT:
+        return "TIMEOUT";
+    case QS100_NETWORK_RX_RESTART_FAILED:
+        return "RX_RESTART_FAILED";
+    case QS100_NETWORK_RESPONSE_OVERFLOW:
+        return "RESPONSE_OVERFLOW";
+    case QS100_NETWORK_CME_ERROR:
+        return "CME_ERROR";
+    case QS100_NETWORK_UNEXPECTED_RESPONSE:
+        return "UNEXPECTED_RESPONSE";
+    default:
+        return "UNKNOWN";
     }
 }
 
@@ -1330,4 +1333,16 @@ QS100_NetworkStatus Int_QS100_UploadData(const char *server,
         COM_DEBUG_LN("QS100 upload data success, length=%u", length);
         return QS100_NETWORK_CONNECTED;
     }
+}
+
+void Int_QS100_EnterLowPower(void)
+{
+    // 发送AT命令
+    // 0:这个参数可有可无,但是咱们这里需要,需要通过外部中断唤醒!
+    Int_QS100_SendATCMD("AT+FASTOFF=0\r\n");
+}
+
+void Int_QS100_LeaveLowPower(void)
+{
+    Int_QS100_WakeUp();
 }

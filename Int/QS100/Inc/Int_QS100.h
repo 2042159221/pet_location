@@ -51,4 +51,15 @@ QS100_NetworkStatus Int_QS100_UploadData(const char *server,
                                          const uint8_t *data);
 
 
+// 进入低功耗
+
+    //发送AT 命令
+    //0 表示QS100 进入中断 是由外部中断唤醒
+
+void Int_QS100_EnterLowPower(void);
+
+// 退出低功耗
+void Int_QS100_LeaveLowPower(void);
+
+
 #endif /* INT_QS100_H */

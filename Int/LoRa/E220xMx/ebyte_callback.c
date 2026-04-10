@@ -96,8 +96,6 @@ void Ebyte_Port_TransmitCallback( uint16e_t state )
  */
 void Ebyte_Port_ReceiveCallback(  uint16e_t state, uint8e_t *buffer, uint8e_t length )
 {
-    uint8_t  j,  pcEchoLength;
-    uint8_t *p;
     COM_DEBUG_LN("Receieve Status Code : 0x%x",state);
     /* 接收: 正常 */
     if( state & 0x0002 )

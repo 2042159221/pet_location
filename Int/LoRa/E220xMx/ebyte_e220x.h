@@ -179,3 +179,6 @@ void Ebyte_E220x_InterruptTrigger(void);
 void Ebyte_E220x_SetSleep( uint8e_t  cmd );
 uint32e_t Ebyte_E220x_GetName(void);
 uint8e_t Ebyte_E220x_GetDriverVersion(void);
+
+
+

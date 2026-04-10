@@ -149,3 +149,14 @@ Status_For_Get Int_AT6558R_GetGPSData(uint8_t *received_data, uint16_t received_
 
     return GET_OK;
 }
+
+//进入低功耗
+void Int_AT6558R_EnterLowPower(void){
+    HAL_GPIO_WritePin(GPS_EN_GPIO_Port,GPS_EN_Pin,GPIO_PIN_RESET);
+
+}
+
+//唤醒
+void Int_AT6558R_LeaveLowPower(void){
+    HAL_GPIO_WritePin(GPS_EN_GPIO_Port,GPS_EN_Pin,GPIO_PIN_SET);
+}
