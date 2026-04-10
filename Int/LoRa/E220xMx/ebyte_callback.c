@@ -51,7 +51,7 @@
  */
 void Ebyte_Port_TransmitCallback( uint16e_t state )
 {
-    COM_DEBUG_LN("Send Status Code : 0x%x",state);
+    COM_DEBUG_LN("LoRa Send Status Code : 0x%x",state);
     //发送完成后切换到接收模式
     Ebyte_RF.EnterReceiveMode(0);
 
@@ -59,20 +59,20 @@ void Ebyte_Port_TransmitCallback( uint16e_t state )
     if( state & 0x0001 )
     {
         //To-do 实现自己的逻辑
-        COM_DEBUG_LN("Data Send OK...");
+        COM_DEBUG_LN("LoRa Data Send OK...");
     }
     /* 发送: 异常超时 */
     else if ( state & 0x0200 )
     {
         //To-do 实现自己的逻辑
-        COM_DEBUG_LN("Data Send TIMEOUT ! ...");
+        COM_DEBUG_LN("LoRa Data Send TIMEOUT ! ...");
     }
     /* 发送: 未知错误 */
     else
     {
         /* 发送状态标识不正确，请检查软硬件
            常见问题 1:SPI通信不正确 2:模块供电不足 */
-           COM_DEBUG_LN("Data Send- Unknown Error, Check Hardware!");
+           COM_DEBUG_LN("LoRa Data Send- Unknown Error, Check Hardware!");
         while( 1 );
     }
 }
@@ -96,19 +96,19 @@ void Ebyte_Port_TransmitCallback( uint16e_t state )
  */
 void Ebyte_Port_ReceiveCallback(  uint16e_t state, uint8e_t *buffer, uint8e_t length )
 {
-    COM_DEBUG_LN("Receieve Status Code : 0x%x",state);
+    COM_DEBUG_LN("LoRa Receieve Status Code : 0x%x",state);
     /* 接收: 正常 */
     if( state & 0x0002 )
     {
         //To-do 实现自己的逻辑
-        COM_DEBUG_LN(" Have Recieeved Data! lenght=%d, data=%s\r\n", length, buffer);
+        COM_DEBUG_LN("LoRa  Have Recieeved Data! lenght=%d, data=%s\r\n", length, buffer);
 
     }
     /* 接收: 异常超时 */
     else if ( state & 0x0200 )
     {
         //To-do 实现自己的逻辑
-        COM_DEBUG_LN("Data Receieve TIMEOUT ! ...");
+        COM_DEBUG_LN("LoRa Data Receieve TIMEOUT ! ...");
     }
     /* 接收: 未知错误 */
     else
